@@ -10,7 +10,7 @@ const STEPS = [
   { label: '识别标志性建筑与地标', duration: 4500 },
   { label: '提取视觉符号与色彩体系', duration: 4000 },
   { label: '检索图片素材', duration: 5000 },
-  { label: '生成专属设计提案中…', duration: 99999 },
+  { label: '整合所有信息汇总呈现中', duration: 99999 },
 ]
 
 const TOTAL_MS = STEPS.slice(0, -1).reduce((s, step) => s + step.duration, 0)
