@@ -27,6 +27,13 @@ export interface Motto {
   interpretation: string
 }
 
+export interface ImageResult {
+  keyword: string
+  title: string
+  imageUrl: string
+  link: string
+}
+
 export interface SchoolBrief {
   school_name: string
   school_abbr: string

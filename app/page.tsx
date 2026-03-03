@@ -2,7 +2,7 @@
 
 import { useState, useRef } from 'react'
 import BriefResult from '@/app/components/BriefResult'
-import { SchoolBrief } from '@/app/types'
+import { SchoolBrief, ImageResult } from '@/app/types'
 
 const EXAMPLE_SCHOOLS = ['山东大学', '北京大学', '复旦大学', '浙江大学', '同济大学']
 
@@ -10,6 +10,7 @@ export default function HomePage() {
   const [school, setSchool] = useState('')
   const [loading, setLoading] = useState(false)
   const [brief, setBrief] = useState<SchoolBrief | null>(null)
+  const [images, setImages] = useState<ImageResult[]>([])
   const [citations, setCitations] = useState<string[]>([])
   const [error, setError] = useState('')
   const resultRef = useRef<HTMLDivElement>(null)
@@ -22,6 +23,7 @@ export default function HomePage() {
     setLoading(true)
     setError('')
     setBrief(null)
+    setImages([])
 
     try {
       const res = await fetch('/api/brief', {
@@ -38,6 +40,7 @@ export default function HomePage() {
       }
 
       setBrief(data.brief)
+      setImages(data.images || [])
       setCitations(data.citations || [])
 
       setTimeout(() => {
@@ -132,7 +135,7 @@ export default function HomePage() {
           </div>
         )}
 
-        {brief && !loading && <BriefResult brief={brief} citations={citations} />}
+        {brief && !loading && <BriefResult brief={brief} images={images} citations={citations} />}
 
         {!brief && !loading && !error && (
           <div className="text-center py-16">

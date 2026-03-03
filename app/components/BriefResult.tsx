@@ -1,9 +1,11 @@
 'use client'
 
-import { SchoolBrief } from '@/app/types'
+import { useState } from 'react'
+import { SchoolBrief, ImageResult } from '@/app/types'
 
 interface BriefResultProps {
   brief: SchoolBrief
+  images: ImageResult[]
   citations: string[]
 }
 
@@ -58,7 +60,36 @@ function PatternBlock({ label, content }: { label: string; content: string }) {
   )
 }
 
-export default function BriefResult({ brief, citations }: BriefResultProps) {
+function ImageCard({ image }: { image: ImageResult }) {
+  const [error, setError] = useState(false)
+
+  if (error) return null
+
+  return (
+    <a
+      href={image.link}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group block rounded-xl overflow-hidden border border-stone-100 hover:border-stone-300 transition"
+    >
+      <div className="relative aspect-[4/3] bg-stone-100 overflow-hidden">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={image.imageUrl}
+          alt={image.title}
+          className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+          onError={() => setError(true)}
+        />
+      </div>
+      <div className="px-3 py-2 bg-white">
+        <p className="text-xs text-stone-500 truncate">{image.keyword}</p>
+        <p className="text-xs text-stone-400 truncate mt-0.5">{image.title}</p>
+      </div>
+    </a>
+  )
+}
+
+export default function BriefResult({ brief, images, citations }: BriefResultProps) {
   const accentColor = brief.visual_assets?.primary_colors?.[0]?.hex || '#8B1A1A'
 
   return (
@@ -82,7 +113,6 @@ export default function BriefResult({ brief, citations }: BriefResultProps) {
           </div>
         </div>
 
-        {/* 校训 */}
         {brief.motto?.original && (
           <div className="mt-6 pt-5 border-t border-white/20">
             <p className="text-white/60 text-xs tracking-widest mb-1">校训</p>
@@ -101,7 +131,7 @@ export default function BriefResult({ brief, citations }: BriefResultProps) {
 
       {/* 视觉资产 */}
       <SectionCard label="视觉资产" accent={accentColor}>
-        <div className="space-y-5">
+        <div className="space-y-6">
           {/* 主色系 */}
           {brief.visual_assets?.primary_colors?.length > 0 && (
             <div>
@@ -114,7 +144,7 @@ export default function BriefResult({ brief, citations }: BriefResultProps) {
             </div>
           )}
 
-          {/* 地标 & 文化符号 */}
+          {/* 地标 & 文化符号标签 */}
           <div className="grid grid-cols-2 gap-4">
             {brief.visual_assets?.landmarks?.length > 0 && (
               <div>
@@ -151,6 +181,20 @@ export default function BriefResult({ brief, citations }: BriefResultProps) {
               </div>
             )}
           </div>
+
+          {/* 真实图片网格 */}
+          {images.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-stone-400 tracking-widest mb-3">
+                检索图片素材
+              </p>
+              <div className="grid grid-cols-3 gap-3">
+                {images.map((img, i) => (
+                  <ImageCard key={i} image={img} />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </SectionCard>
 

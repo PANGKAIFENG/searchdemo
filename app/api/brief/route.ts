@@ -26,7 +26,7 @@ const SYSTEM_PROMPT = `你是一位专业的校服设计提案专家。
     ],
     "landmarks": ["地标建筑1", "地标建筑2"],
     "cultural_symbols": ["文化符号1", "符号2"],
-    "image_search_keywords": ["图片搜索关键词1", "关键词2"]
+    "image_search_keywords": ["学校名+地标关键词1", "学校名+地标关键词2", "学校名+文化符号1", "学校名+校园风景"]
   },
   "design_logic": "设计逻辑（100-150字）",
   "pattern_suggestions": {
@@ -55,11 +55,13 @@ export async function POST(request: NextRequest) {
     const apiKey = process.env.GEEKAI_API_KEY
     const baseUrl = process.env.GEEKAI_BASE_URL || 'https://geekai.co/api/v1'
     const model = process.env.GEEKAI_MODEL || 'gpt-4o'
+    const serperKey = process.env.SERPER_API_KEY
 
     if (!apiKey) {
       return NextResponse.json({ error: '服务未配置 API Key' }, { status: 500 })
     }
 
+    // 第一步：调用 GeeKAI 生成设计提案
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -100,10 +102,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'AI 未返回有效内容' }, { status: 502 })
     }
 
-    // 解析 JSON：从内容中提取第一个完整的 JSON 对象
-    let brief: unknown
+    let brief: Record<string, unknown>
     try {
-      brief = extractJSON(content)
+      brief = extractJSON(content) as Record<string, unknown>
     } catch {
       return NextResponse.json(
         { error: 'AI 返回格式异常，请重试', raw: content },
@@ -111,22 +112,85 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    return NextResponse.json({ brief, citations: data.citations || [] })
+    // 第二步：并行搜索图片（使用 AI 给出的 image_search_keywords）
+    const visualAssets = brief.visual_assets as Record<string, unknown> | undefined
+    const keywords: string[] = (visualAssets?.image_search_keywords as string[]) || []
+    let images: ImageResult[] = []
+
+    if (serperKey && keywords.length > 0) {
+      images = await searchImages(keywords, serperKey)
+    }
+
+    return NextResponse.json({
+      brief,
+      images,
+      citations: data.citations || [],
+    })
   } catch (error) {
     console.error('Brief API error:', error)
     return NextResponse.json({ error: '服务器内部错误，请稍后重试' }, { status: 500 })
   }
 }
 
+export interface ImageResult {
+  keyword: string
+  title: string
+  imageUrl: string
+  link: string
+}
+
+// 并行搜索多个关键词的图片，每个取第一张
+async function searchImages(keywords: string[], apiKey: string): Promise<ImageResult[]> {
+  const results = await Promise.allSettled(
+    keywords.slice(0, 6).map((keyword) => searchOneKeyword(keyword, apiKey))
+  )
+
+  return results
+    .filter((r): r is PromiseFulfilledResult<ImageResult | null> => r.status === 'fulfilled')
+    .map((r) => r.value)
+    .filter((v): v is ImageResult => v !== null)
+}
+
+async function searchOneKeyword(keyword: string, apiKey: string): Promise<ImageResult | null> {
+  try {
+    const res = await fetch('https://google.serper.dev/images', {
+      method: 'POST',
+      headers: {
+        'X-API-KEY': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ q: keyword, num: 3, gl: 'cn', hl: 'zh-cn' }),
+    })
+
+    if (!res.ok) return null
+
+    const data = await res.json()
+    const images = data.images as Array<{ title: string; imageUrl: string; link: string }>
+    if (!images?.length) return null
+
+    // 优先选带 https 且非 icon 的图片
+    const best = images.find(
+      (img) => img.imageUrl?.startsWith('https') && !img.imageUrl.includes('icon')
+    ) || images[0]
+
+    return {
+      keyword,
+      title: best.title || keyword,
+      imageUrl: best.imageUrl,
+      link: best.link || '',
+    }
+  } catch {
+    return null
+  }
+}
+
 // 从可能包含思考过程、function_calls 标签、markdown 代码块的文本中提取 JSON
 function extractJSON(text: string): unknown {
-  // 1. 优先提取 ```json ... ``` 块
   const codeBlockMatch = text.match(/```json\s*([\s\S]*?)```/)
   if (codeBlockMatch) {
     return JSON.parse(sanitizeJSON(codeBlockMatch[1].trim()))
   }
 
-  // 2. 提取第一个 { 到最后一个 } 之间的内容
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
   if (start !== -1 && end !== -1 && end > start) {
@@ -136,10 +200,8 @@ function extractJSON(text: string): unknown {
   throw new Error('No JSON found in response')
 }
 
-// 修复 JSON 字符串值中的未转义双引号（模型有时会在值中插入裸双引号）
 function sanitizeJSON(raw: string): string {
-  // 将 JSON 字符串值中出现的中文全角双引号替换为书名号，避免解析歧义
   return raw
-    .replace(/\u201c/g, '「') // 左双弯引号 "
-    .replace(/\u201d/g, '」') // 右双弯引号 "
+    .replace(/\u201c/g, '「')
+    .replace(/\u201d/g, '」')
 }
