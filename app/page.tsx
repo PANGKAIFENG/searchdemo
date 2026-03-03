@@ -1,65 +1,146 @@
-import Image from "next/image";
+'use client'
 
-export default function Home() {
+import { useState, useRef } from 'react'
+import BriefResult from '@/app/components/BriefResult'
+import { SchoolBrief } from '@/app/types'
+
+const EXAMPLE_SCHOOLS = ['山东大学', '北京大学', '复旦大学', '浙江大学', '同济大学']
+
+export default function HomePage() {
+  const [school, setSchool] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [brief, setBrief] = useState<SchoolBrief | null>(null)
+  const [citations, setCitations] = useState<string[]>([])
+  const [error, setError] = useState('')
+  const resultRef = useRef<HTMLDivElement>(null)
+
+  async function handleSubmit(schoolName?: string) {
+    const name = (schoolName ?? school).trim()
+    if (!name) return
+
+    if (schoolName) setSchool(schoolName)
+    setLoading(true)
+    setError('')
+    setBrief(null)
+
+    try {
+      const res = await fetch('/api/brief', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ school: name }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error || '请求失败，请重试')
+        return
+      }
+
+      setBrief(data.brief)
+      setCitations(data.citations || [])
+
+      setTimeout(() => {
+        resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 100)
+    } catch {
+      setError('网络错误，请检查连接后重试')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <main className="min-h-screen bg-stone-50">
+      {/* Header */}
+      <div className="bg-white border-b border-stone-100 sticky top-0 z-10 shadow-sm">
+        <div className="max-w-3xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div>
+            <span className="text-base font-bold text-stone-800 tracking-tight">迪尚 · 校服设计提案</span>
+            <span className="ml-2 text-xs text-stone-400">AI 驱动</span>
+          </div>
+          <span className="text-xs text-stone-400">DEMO</span>
+        </div>
+      </div>
+
+      {/* Hero + 搜索 */}
+      <div className="bg-white border-b border-stone-100 py-12">
+        <div className="max-w-3xl mx-auto px-6 text-center">
+          <h1 className="text-4xl font-bold text-stone-900 tracking-tight mb-3">
+            输入学校名称
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="text-stone-500 text-base mb-8">
+            AI 联网检索学校文化资料，自动生成专属校服设计提案
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+
+          <div className="flex gap-3 max-w-xl mx-auto">
+            <input
+              type="text"
+              value={school}
+              onChange={(e) => setSchool(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
+              placeholder="例如：山东大学"
+              className="flex-1 border border-stone-200 rounded-xl px-5 py-3 text-stone-800 text-base outline-none focus:ring-2 focus:ring-stone-800 focus:border-transparent transition"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            <button
+              onClick={() => handleSubmit()}
+              disabled={loading || !school.trim()}
+              className="bg-stone-900 hover:bg-stone-700 disabled:bg-stone-300 text-white font-semibold px-7 py-3 rounded-xl transition text-base flex-shrink-0"
+            >
+              {loading ? '生成中…' : '生成提案'}
+            </button>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2 justify-center">
+            {EXAMPLE_SCHOOLS.map((s) => (
+              <button
+                key={s}
+                onClick={() => handleSubmit(s)}
+                disabled={loading}
+                className="text-xs text-stone-500 hover:text-stone-800 bg-stone-100 hover:bg-stone-200 px-3 py-1.5 rounded-full transition disabled:opacity-40"
+              >
+                {s}
+              </button>
+            ))}
+          </div>
         </div>
-      </main>
-    </div>
-  );
+      </div>
+
+      {/* 结果区 */}
+      <div className="max-w-3xl mx-auto px-6 py-10" ref={resultRef}>
+        {loading && (
+          <div className="text-center py-20">
+            <div className="inline-flex flex-col items-center gap-4">
+              <div className="w-12 h-12 border-4 border-stone-200 border-t-stone-800 rounded-full animate-spin" />
+              <div>
+                <p className="text-stone-800 font-semibold">正在检索资料并生成提案</p>
+                <p className="text-stone-400 text-sm mt-1">AI 联网搜索中，通常需要 15–30 秒</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {error && !loading && (
+          <div className="bg-red-50 border border-red-100 rounded-2xl p-6 text-center">
+            <p className="text-red-600 font-semibold">{error}</p>
+            <button
+              onClick={() => handleSubmit()}
+              className="mt-3 text-sm text-red-500 hover:text-red-700 underline"
+            >
+              重试
+            </button>
+          </div>
+        )}
+
+        {brief && !loading && <BriefResult brief={brief} citations={citations} />}
+
+        {!brief && !loading && !error && (
+          <div className="text-center py-16">
+            <div className="text-6xl mb-4">🎓</div>
+            <p className="text-stone-400 text-base">输入任意学校名称，开始生成专属设计提案</p>
+          </div>
+        )}
+      </div>
+    </main>
+  )
 }
