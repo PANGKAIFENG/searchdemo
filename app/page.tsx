@@ -2,6 +2,7 @@
 
 import { useState, useRef } from 'react'
 import BriefResult from '@/app/components/BriefResult'
+import LoadingProgress from '@/app/components/LoadingProgress'
 import { SchoolBrief, ImageResult } from '@/app/types'
 
 const EXAMPLE_SCHOOLS = ['山东大学', '北京大学', '复旦大学', '浙江大学', '同济大学']
@@ -111,17 +112,7 @@ export default function HomePage() {
 
       {/* 结果区 */}
       <div className="max-w-3xl mx-auto px-6 py-10" ref={resultRef}>
-        {loading && (
-          <div className="text-center py-20">
-            <div className="inline-flex flex-col items-center gap-4">
-              <div className="w-12 h-12 border-4 border-stone-200 border-t-stone-800 rounded-full animate-spin" />
-              <div>
-                <p className="text-stone-800 font-semibold">正在检索资料并生成提案</p>
-                <p className="text-stone-400 text-sm mt-1">AI 联网搜索中，通常需要 15–30 秒</p>
-              </div>
-            </div>
-          </div>
-        )}
+        {loading && <LoadingProgress school={school} />}
 
         {error && !loading && (
           <div className="bg-red-50 border border-red-100 rounded-2xl p-6 text-center">

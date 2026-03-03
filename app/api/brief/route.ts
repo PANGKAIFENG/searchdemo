@@ -112,13 +112,14 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 第二步：并行搜索图片（使用 AI 给出的 image_search_keywords）
+    // 第二步：用 brief 里的地标 + 文化符号作为搜图关键词
     const visualAssets = brief.visual_assets as Record<string, unknown> | undefined
-    const keywords: string[] = (visualAssets?.image_search_keywords as string[]) || []
+    const landmarks = (visualAssets?.landmarks as string[]) || []
+    const culturalSymbols = (visualAssets?.cultural_symbols as string[]) || []
     let images: ImageResult[] = []
 
-    if (serperKey && keywords.length > 0) {
-      images = await searchImages(keywords, serperKey)
+    if (serperKey && (landmarks.length > 0 || culturalSymbols.length > 0)) {
+      images = await searchImages(school.trim(), landmarks, culturalSymbols, serperKey)
     }
 
     return NextResponse.json({
@@ -139,48 +140,59 @@ export interface ImageResult {
   link: string
 }
 
-// 并行搜索多个关键词的图片，每个取第一张
-async function searchImages(keywords: string[], apiKey: string): Promise<ImageResult[]> {
+// 第二步：根据 brief 里的地标 + 文化符号构建关键词，每个词取 2 张图
+async function searchImages(
+  schoolName: string,
+  landmarks: string[],
+  culturalSymbols: string[],
+  apiKey: string
+): Promise<ImageResult[]> {
+  // 优先级：地标（最相关）→ 文化符号 → 校园全景兜底
+  const keywords: string[] = [
+    ...landmarks.slice(0, 4).map((l) => `${schoolName} ${l}`),
+    ...culturalSymbols.slice(0, 3).map((s) => `${schoolName} ${s}`),
+    `${schoolName} 校园`,
+  ]
+
   const results = await Promise.allSettled(
-    keywords.slice(0, 6).map((keyword) => searchOneKeyword(keyword, apiKey))
+    keywords.slice(0, 6).map((kw) => searchOneKeyword(kw, apiKey, 2))
   )
 
   return results
-    .filter((r): r is PromiseFulfilledResult<ImageResult | null> => r.status === 'fulfilled')
-    .map((r) => r.value)
-    .filter((v): v is ImageResult => v !== null)
+    .flatMap((r) => (r.status === 'fulfilled' && r.value ? r.value : []))
 }
 
-async function searchOneKeyword(keyword: string, apiKey: string): Promise<ImageResult | null> {
+async function searchOneKeyword(
+  keyword: string,
+  apiKey: string,
+  count: number
+): Promise<ImageResult[]> {
   try {
     const res = await fetch('https://google.serper.dev/images', {
       method: 'POST',
-      headers: {
-        'X-API-KEY': apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ q: keyword, num: 3, gl: 'cn', hl: 'zh-cn' }),
+      headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: keyword, num: count + 2, gl: 'cn', hl: 'zh-cn' }),
     })
 
-    if (!res.ok) return null
+    if (!res.ok) return []
 
     const data = await res.json()
-    const images = data.images as Array<{ title: string; imageUrl: string; link: string }>
-    if (!images?.length) return null
+    const images = data.images as Array<{ title: string; imageUrl: string; link: string }> || []
 
-    // 优先选带 https 且非 icon 的图片
-    const best = images.find(
-      (img) => img.imageUrl?.startsWith('https') && !img.imageUrl.includes('icon')
-    ) || images[0]
+    // 过滤掉 icon/logo 类小图，优先 https
+    const valid = images
+      .filter((img) => img.imageUrl && !img.imageUrl.includes('icon') && !img.imageUrl.includes('logo'))
+      .sort((a) => (a.imageUrl.startsWith('https') ? -1 : 1))
+      .slice(0, count)
 
-    return {
+    return valid.map((img) => ({
       keyword,
-      title: best.title || keyword,
-      imageUrl: best.imageUrl,
-      link: best.link || '',
-    }
+      title: img.title || keyword,
+      imageUrl: img.imageUrl,
+      link: img.link || '',
+    }))
   } catch {
-    return null
+    return []
   }
 }
 
