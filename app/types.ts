@@ -109,6 +109,22 @@ export interface SchoolBrief {
   citations: string[]
 }
 
+// ─── Step 2 设计提案 ─────────────────────────────────────
+
+export interface PatternSuggestion {
+  position: '门襟' | '袖口' | '帽兜'
+  rationale: string
+  prompt: string
+  imageIndex: number
+}
+
+export interface Step2Brief {
+  designTheme: string
+  creativeFoundation: string
+  designLogic: string
+  patternSuggestions: PatternSuggestion[]
+}
+
 // ─── 通用 ────────────────────────────────────────────────
 
 export interface ImageResult {

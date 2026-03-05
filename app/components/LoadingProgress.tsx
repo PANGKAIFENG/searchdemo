@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 export interface LoadingStep {
   label: string
@@ -18,9 +18,19 @@ export const COLLECT_STEPS: LoadingStep[] = [
   { label: '整合所有信息汇总呈现中', duration: 99999 },
 ]
 
+export const BRIEF_STEPS: LoadingStep[] = [
+  { label: '分析院校文化内涵', duration: 3000 },
+  { label: '提炼设计主题与灵感来源', duration: 4000 },
+  { label: '构建色彩与符号体系', duration: 3500 },
+  { label: '生成门襟纹样设计方案', duration: 4000 },
+  { label: '生成袖口纹样设计方案', duration: 3500 },
+  { label: '生成帽兜纹样设计方案', duration: 3500 },
+  { label: '整合提案并优化呈现中', duration: 99999 },
+]
+
 interface Props {
   school: string
-  title?: string
+  title?: ReactNode
   steps?: LoadingStep[]
   accentColor?: string
 }

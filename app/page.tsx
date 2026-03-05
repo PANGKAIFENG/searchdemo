@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import LoadingProgress, { COLLECT_STEPS } from '@/app/components/LoadingProgress'
 import Step1Form from '@/app/components/Step1/Step1Form'
+import Step2View from '@/app/components/Step2/Step2View'
 import { SchoolData, ImageResult } from '@/app/types'
 
 type Phase = 'idle' | 'collecting' | 'review' | 'step2'
@@ -184,30 +185,15 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* ── Phase: step2 (placeholder) ── */}
+      {/* ── Phase: step2 ── */}
       {phase === 'step2' && schoolData && (
-        <div className="max-w-3xl mx-auto px-6 py-16 text-center">
-          <div className="text-5xl mb-4">✅</div>
-          <h2 className="text-2xl font-bold text-stone-900 mb-2">资料确认完成</h2>
-          <p className="text-stone-500 mb-6">
-            已收到 <span className="font-semibold text-stone-800">{school}</span> 的院校资料，Step 2 设计提案生成即将上线
-          </p>
-          <div className="bg-white rounded-2xl border border-stone-100 shadow-sm p-6 text-left max-w-md mx-auto mb-8">
-            <p className="text-sm font-semibold text-stone-700 mb-3">已确认数据摘要</p>
-            <div className="space-y-1.5 text-sm text-stone-500">
-              <p>校名：{schoolData.basic.full_name || school}</p>
-              <p>校训：{schoolData.culture.motto || '—'}</p>
-              <p>参考图片：{images.length} 张</p>
-              <p>历史节点：{schoolData.history.timeline.length} 条</p>
-              <p>标准校色：{schoolData.symbols.standard_colors.length} 个</p>
-            </div>
-          </div>
-          <button
-            onClick={handleReset}
-            className="text-sm text-stone-400 hover:text-stone-600 underline"
-          >
-            重新开始
-          </button>
+        <div className="max-w-3xl mx-auto px-6 py-8">
+          <Step2View
+            schoolName={school}
+            schoolData={schoolData}
+            images={images}
+            onReset={handleReset}
+          />
         </div>
       )}
     </main>
