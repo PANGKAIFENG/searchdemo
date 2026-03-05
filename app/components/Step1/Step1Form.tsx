@@ -5,11 +5,10 @@ import { useState } from 'react'
 
 // ─── 子组件 ────────────────────────────────────────────────
 
-function SectionHeader({ index, title }: { index: number; title: string }) {
+function SectionHeader({ title }: { title: string }) {
   return (
     <div className="flex items-center gap-3 mb-5">
       <div className="w-1 h-5 bg-indigo-500 rounded-full" />
-      <span className="text-xs font-bold text-indigo-500">{index}.</span>
       <span className="text-sm font-semibold text-stone-800">{title}</span>
     </div>
   )
@@ -269,7 +268,7 @@ export default function Step1Form({
 
       {/* 1. 院校基本面 */}
       <div className={cardClass}>
-        <SectionHeader index={1} title="院校基本面" />
+        <SectionHeader title="院校基本面" />
         <div className="grid grid-cols-2 gap-4">
           <Field label="校名全称" value={data.basic.full_name} onChange={(v) => update('basic', { full_name: v })} />
           <Field label="简称" value={data.basic.short_name} onChange={(v) => update('basic', { short_name: v })} />
@@ -283,7 +282,7 @@ export default function Step1Form({
 
       {/* 2. 学校文化灵魂 */}
       <div className={cardClass}>
-        <SectionHeader index={2} title="学校文化灵魂" />
+        <SectionHeader title="学校文化灵魂" />
         <div className="space-y-4">
           <Field label="校训" value={data.culture.motto} onChange={(v) => update('culture', { motto: v })} />
           <Field label="校歌片段" value={data.culture.school_song_excerpt} onChange={(v) => update('culture', { school_song_excerpt: v })} multiline />
@@ -296,7 +295,7 @@ export default function Step1Form({
 
       {/* 3. 符号语义块 */}
       <div className={cardClass}>
-        <SectionHeader index={3} title="符号语义块" />
+        <SectionHeader title="符号语义块" />
         <div className="space-y-4">
           <Field label="校徽官方释义" value={data.symbols.emblem_description} onChange={(v) => update('symbols', { emblem_description: v })} multiline />
           <div className="grid grid-cols-2 gap-4">
@@ -319,7 +318,7 @@ export default function Step1Form({
 
       {/* 4. 历史时间轴 */}
       <div className={cardClass}>
-        <SectionHeader index={4} title="历史时间轴" />
+        <SectionHeader title="历史时间轴" />
         <div className="space-y-3 mb-4">
           {data.history.timeline.map((item, i) => (
             <TimelineRow
@@ -337,7 +336,7 @@ export default function Step1Form({
       {/* 5 & 6 */}
       <div className="grid grid-cols-2 gap-4">
         <div className={cardClass}>
-          <SectionHeader index={5} title="核心地标语义" />
+          <SectionHeader title="核心地标语义" />
           <div className="space-y-4">
             <Field label="标志性建筑" value={data.landmarks.buildings} onChange={(v) => update('landmarks', { buildings: v })} multiline placeholder="逗号分隔，如：未名湖、博雅塔" />
             <Field label="非遗石刻" value={data.landmarks.stone_carvings} onChange={(v) => update('landmarks', { stone_carvings: v })} />
@@ -345,7 +344,7 @@ export default function Step1Form({
           </div>
         </div>
         <div className={cardClass}>
-          <SectionHeader index={6} title="生态环境语义" />
+          <SectionHeader title="生态环境语义" />
           <div className="space-y-4">
             <Field label="校花 / 校树" value={data.ecology.plants} onChange={(v) => update('ecology', { plants: v })} multiline />
             <Field label="湖泊 / 山岳" value={data.ecology.geography} onChange={(v) => update('ecology', { geography: v })} />
@@ -355,7 +354,7 @@ export default function Step1Form({
 
       {/* 7. 荣誉与学科 */}
       <div className={cardClass}>
-        <SectionHeader index={7} title="荣誉与学科" />
+        <SectionHeader title="荣誉与学科" />
         <div className="grid grid-cols-2 gap-4">
           <Field label="强势学科" value={data.academics.strong_disciplines} onChange={(v) => update('academics', { strong_disciplines: v })} multiline />
           <Field label="重大科技成果" value={data.academics.major_achievements} onChange={(v) => update('academics', { major_achievements: v })} multiline />
@@ -364,7 +363,7 @@ export default function Step1Form({
 
       {/* 8. 营销话术 */}
       <div className={cardClass}>
-        <SectionHeader index={8} title="营销话术采集" />
+        <SectionHeader title="营销话术采集" />
         <div className="space-y-4">
           <Field label="校长寄语" value={data.marketing.president_message} onChange={(v) => update('marketing', { president_message: v })} multiline />
           <div className="grid grid-cols-2 gap-4">
@@ -382,7 +381,7 @@ export default function Step1Form({
 
       <div className={cardClass}>
         <div className="flex items-center justify-between mb-4">
-          <SectionHeader index={9} title="地标实拍图" />
+          <SectionHeader title="地标实拍图" />
           <p className="text-xs text-stone-400">用于后续纹样生成的参考图，可删除不相关图片</p>
         </div>
         <div className="grid grid-cols-3 gap-3">
