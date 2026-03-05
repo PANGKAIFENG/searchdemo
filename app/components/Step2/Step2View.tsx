@@ -125,7 +125,6 @@ function PatternCard({
   }
 
   const allImages = tasks.flatMap((t) => t.imageUrls)
-  const hasAnyImage = allImages.length > 0
 
   return (
     <div className="bg-white rounded-2xl border border-stone-100 shadow-sm overflow-hidden">
@@ -224,8 +223,8 @@ function PatternCard({
           </div>
         </div>
 
-        {/* 生成结果：4 张图 2×2 */}
-        {(cardPhase === 'done' || (cardPhase === 'generating' && hasAnyImage)) && (
+        {/* 生成结果：4 张图 2×2，generating 时立即展示占位框 */}
+        {(cardPhase === 'generating' || cardPhase === 'done') && (
           <div>
             <p className="text-xs text-stone-400 mb-2">
               生成结果
@@ -234,28 +233,38 @@ function PatternCard({
               </span>
             </p>
             <div className="grid grid-cols-2 gap-2">
-              {tasks.map((t) =>
-                t.done && !t.failed
-                  ? t.imageUrls.map((url, idx) => (
-                      <GeneratedImage
-                        key={`${t.taskId}-${idx}`}
-                        url={url}
-                        label={`${t.model} · ${idx + 1}`}
-                        alt={`${schoolName} ${suggestion.position}纹样`}
-                      />
-                    ))
-                  : t.failed
-                  ? (
-                    <div key={t.taskId} className="aspect-square rounded-xl bg-red-50 border border-red-100 flex items-center justify-center col-span-1">
-                      <span className="text-red-300 text-xs text-center px-2">{t.model}<br />生成失败</span>
-                    </div>
-                  )
-                  : Array.from({ length: 2 }).map((_, idx) => (
-                    <div key={`${t.taskId}-placeholder-${idx}`} className="aspect-square rounded-xl bg-stone-50 border border-stone-100 flex items-center justify-center">
-                      <span className="w-5 h-5 border-2 border-stone-200 border-t-stone-400 rounded-full animate-spin" />
+              {tasks.length === 0
+                ? /* 还未收到 taskId，展示 4 个占位 spinner */
+                  Array.from({ length: 4 }).map((_, idx) => (
+                    <div key={idx} className="aspect-square rounded-xl bg-stone-50 border border-stone-100 flex flex-col items-center justify-center gap-2">
+                      <span className="w-6 h-6 border-2 border-stone-200 border-t-stone-400 rounded-full animate-spin" />
+                      <span className="text-xs text-stone-300">提交中…</span>
                     </div>
                   ))
-              )}
+                : tasks.flatMap((t) =>
+                    t.done && !t.failed
+                      ? t.imageUrls.map((url, idx) => (
+                          <GeneratedImage
+                            key={`${t.taskId}-${idx}`}
+                            url={url}
+                            label={`${t.model} · ${idx + 1}`}
+                            alt={`${schoolName} ${suggestion.position}纹样`}
+                          />
+                        ))
+                      : t.failed
+                      ? Array.from({ length: 2 }).map((_, idx) => (
+                          <div key={`${t.taskId}-fail-${idx}`} className="aspect-square rounded-xl bg-red-50 border border-red-100 flex items-center justify-center">
+                            <span className="text-red-300 text-xs text-center px-2">{t.model}<br />生成失败</span>
+                          </div>
+                        ))
+                      : Array.from({ length: 2 }).map((_, idx) => (
+                          <div key={`${t.taskId}-pending-${idx}`} className="aspect-square rounded-xl bg-stone-50 border border-stone-100 flex flex-col items-center justify-center gap-2">
+                            <span className="w-6 h-6 border-2 border-stone-200 border-t-stone-400 rounded-full animate-spin" />
+                            <span className="text-xs text-stone-300">{t.model}</span>
+                          </div>
+                        ))
+                  )
+              }
             </div>
           </div>
         )}

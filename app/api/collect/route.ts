@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { SchoolData, ImageResult } from '@/app/types'
 
+export const maxDuration = 60
+
 const COLLECT_PROMPT = `你是院校文化资料采集专家，负责为学位服/校服设计项目收集学校的原始素材。
 
 ⚠️ 输出规则：

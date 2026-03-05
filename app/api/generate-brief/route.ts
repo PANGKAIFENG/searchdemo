@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { SchoolData, ImageResult, Step2Brief } from '@/app/types'
 
+export const maxDuration = 60
+
 const BRIEF_PROMPT = `你是专业的校服纹样设计顾问。根据以下学校文化资料，生成一份校服纹样设计方案。
 
 ⚠️ 输出规则：
