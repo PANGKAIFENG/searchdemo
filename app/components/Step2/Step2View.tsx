@@ -53,14 +53,26 @@ function PatternCard({
 
   const pollTask = useCallback((taskId: string) => {
     activePolls.current.add(taskId)
+    const startTime = Date.now()
+    const MAX_POLL_MS = 5 * 60 * 1000 // 5 分钟超时
 
     async function check() {
       if (!activePolls.current.has(taskId)) return
+
+      // 超时保护：5 分钟后标记失败，停止轮询
+      if (Date.now() - startTime > MAX_POLL_MS) {
+        activePolls.current.delete(taskId)
+        setTasks((prev) =>
+          prev.map((t) => (t.taskId === taskId ? { ...t, done: true, failed: true } : t))
+        )
+        return
+      }
+
       try {
         const res = await fetch(`/api/pattern-status/${taskId}`)
         const data = await res.json()
 
-        // API 返回错误（非 200 或含 error 字段）→ 直接标记失败，停止轮询
+        // API 返回错误 → 标记失败，停止轮询
         if (!res.ok || data.error) {
           activePolls.current.delete(taskId)
           setTasks((prev) =>
@@ -133,8 +145,6 @@ function PatternCard({
     setErrorMsg('')
   }
 
-  const allImages = tasks.flatMap((t) => t.imageUrls)
-
   return (
     <div className="bg-white rounded-2xl border border-stone-100 shadow-sm overflow-hidden">
       {/* Header */}
@@ -182,19 +192,18 @@ function PatternCard({
                   <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
                   AI 生成中…
                 </button>
-                {/* 任务进度 */}
                 {tasks.length > 0 && (
                   <div className="flex gap-2">
-                    {tasks.map((t) => (
+                    {tasks.map((t, i) => (
                       <div key={t.taskId} className="flex-1 flex items-center gap-1.5 bg-stone-50 rounded-lg px-2 py-1">
                         {t.done ? (
                           t.failed
-                            ? <span className="text-red-400 text-xs">✗ {t.model}</span>
-                            : <span className="text-green-500 text-xs">✓ {t.model} ({t.imageUrls.length}张)</span>
+                            ? <span className="text-red-400 text-xs">✗ 方案 {i === 0 ? 'A' : 'B'}</span>
+                            : <span className="text-green-500 text-xs">✓ 方案 {i === 0 ? 'A' : 'B'}（{t.imageUrls.length} 张）</span>
                         ) : (
                           <>
                             <span className="w-3 h-3 border border-t-transparent rounded-full animate-spin flex-shrink-0" style={{ borderColor: `${accentColor}60`, borderTopColor: 'transparent' }} />
-                            <span className="text-stone-400 text-xs truncate">{t.model}</span>
+                            <span className="text-stone-400 text-xs">方案 {i === 0 ? 'A' : 'B'}</span>
                           </>
                         )}
                       </div>
@@ -236,40 +245,36 @@ function PatternCard({
         {(cardPhase === 'generating' || cardPhase === 'done') && (
           <div>
             <p className="text-xs text-stone-400 mb-2">
-              生成结果
-              <span className="ml-1 text-stone-300">
-                （nano-banana-pro × 2 张 + nano-banana-2 × 2 张）
-              </span>
+              生成结果<span className="ml-1 text-stone-300">（共 4 张）</span>
             </p>
             <div className="grid grid-cols-2 gap-2">
               {tasks.length === 0
-                ? /* 还未收到 taskId，展示 4 个占位 spinner */
-                  Array.from({ length: 4 }).map((_, idx) => (
+                ? Array.from({ length: 4 }).map((_, idx) => (
                     <div key={idx} className="aspect-square rounded-xl bg-stone-50 border border-stone-100 flex flex-col items-center justify-center gap-2">
                       <span className="w-6 h-6 border-2 border-stone-200 border-t-stone-400 rounded-full animate-spin" />
                       <span className="text-xs text-stone-300">提交中…</span>
                     </div>
                   ))
-                : tasks.flatMap((t) =>
+                : tasks.flatMap((t, taskIndex) =>
                     t.done && !t.failed
                       ? t.imageUrls.map((url, idx) => (
                           <GeneratedImage
                             key={`${t.taskId}-${idx}`}
                             url={url}
-                            label={`${t.model} · ${idx + 1}`}
+                            label={`图片 ${taskIndex * 2 + idx + 1}`}
                             alt={`${schoolName} ${suggestion.position}纹样`}
                           />
                         ))
                       : t.failed
                       ? Array.from({ length: 2 }).map((_, idx) => (
                           <div key={`${t.taskId}-fail-${idx}`} className="aspect-square rounded-xl bg-red-50 border border-red-100 flex items-center justify-center">
-                            <span className="text-red-300 text-xs text-center px-2">{t.model}<br />生成失败</span>
+                            <span className="text-red-300 text-xs">生成失败</span>
                           </div>
                         ))
                       : Array.from({ length: 2 }).map((_, idx) => (
                           <div key={`${t.taskId}-pending-${idx}`} className="aspect-square rounded-xl bg-stone-50 border border-stone-100 flex flex-col items-center justify-center gap-2">
                             <span className="w-6 h-6 border-2 border-stone-200 border-t-stone-400 rounded-full animate-spin" />
-                            <span className="text-xs text-stone-300">{t.model}</span>
+                            <span className="text-xs text-stone-300">生成中…</span>
                           </div>
                         ))
                   )
@@ -429,9 +434,7 @@ export default function Step2View({ schoolName, schoolData, images, onReset }: S
       <div className="bg-indigo-50 rounded-xl px-4 py-2 flex items-center gap-2">
         <span className="text-indigo-500 text-sm">🪡</span>
         <span className="text-indigo-700 text-sm font-semibold">AI 纹样分段建议</span>
-        <span className="text-indigo-400 text-xs ml-auto">
-          点击「生成纹样图片」· 双模型各出 2 张，共 4 张
-        </span>
+        <span className="text-indigo-400 text-xs ml-auto">点击「生成纹样图片」生成 AI 作图</span>
       </div>
 
       {brief.patternSuggestions.map((s) => (
