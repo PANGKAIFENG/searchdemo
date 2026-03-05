@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-const MODELS = ['nano-banana', 'gpt-image-1-mini'] as const
+// doubao-seedream-4.5：快速（~12-16s），支持中文 prompt
+// nano-banana-2：稳定（~28s），注意不能传 size 参数
+const MODELS = ['doubao-seedream-4.5', 'nano-banana-2'] as const
 
 export async function POST(request: NextRequest) {
   try {
@@ -18,6 +20,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 同时提交两个模型，各生成 2 张
+    // 注意：不传 size 参数，部分模型（nano-banana-2）传 size 会立即失败
     const results = await Promise.allSettled(
       MODELS.map((model) =>
         fetch(`${baseUrl}/images/generations`, {
@@ -27,7 +30,6 @@ export async function POST(request: NextRequest) {
             model,
             prompt: prompt.trim(),
             n: 2,
-            size: '1024x1024',
             async: true,
           }),
         }).then((res) => res.json())
