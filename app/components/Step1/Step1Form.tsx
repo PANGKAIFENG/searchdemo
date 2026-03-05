@@ -247,15 +247,15 @@ export default function Step1Form({
 
   return (
     <div className="max-w-3xl mx-auto space-y-4">
-      {/* 顶部提示 */}
-      <div className="flex items-center justify-between">
+      {/* 顶部操作栏 - sticky */}
+      <div className="sticky top-14 z-[9] -mx-6 px-6 py-3 bg-white/95 backdrop-blur-sm border-b border-stone-100 shadow-sm flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-stone-900">{schoolName}</h2>
           <p className="text-sm text-stone-400 mt-0.5">AI 已自动采集，请核对并修改后确认</p>
         </div>
         <button
           onClick={() => onConfirm(data, images)}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-6 py-2.5 rounded-xl transition text-sm"
+          className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-6 py-2.5 rounded-xl transition text-sm flex-shrink-0"
         >
           确认数据，生成提案 →
         </button>
@@ -399,15 +399,7 @@ export default function Step1Form({
         )}
       </div>
 
-      {/* 底部确认按钮 */}
-      <div className="flex justify-end pb-8">
-        <button
-          onClick={() => onConfirm(data, images)}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-8 py-3 rounded-xl transition"
-        >
-          确认数据，生成提案 →
-        </button>
-      </div>
+      <div className="pb-8" />
     </div>
   )
 }
