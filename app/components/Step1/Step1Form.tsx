@@ -388,7 +388,7 @@ export default function Step1Form({
         <div className="grid grid-cols-3 gap-3">
           {images.map((img, i) => (
             <ImageCard
-              key={i}
+              key={img.imageUrl}
               image={img}
               onDelete={() => setImages((prev) => prev.filter((_, idx) => idx !== i))}
             />
