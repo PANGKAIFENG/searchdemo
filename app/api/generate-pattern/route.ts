@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-const MODELS = ['nano-banana-pro', 'nano-banana-2'] as const
+const MODELS = ['nano-banana', 'gpt-image-1-mini'] as const
 
 export async function POST(request: NextRequest) {
   try {
