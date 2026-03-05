@@ -60,6 +60,15 @@ function PatternCard({
         const res = await fetch(`/api/pattern-status/${taskId}`)
         const data = await res.json()
 
+        // API 返回错误（非 200 或含 error 字段）→ 直接标记失败，停止轮询
+        if (!res.ok || data.error) {
+          activePolls.current.delete(taskId)
+          setTasks((prev) =>
+            prev.map((t) => (t.taskId === taskId ? { ...t, done: true, failed: true } : t))
+          )
+          return
+        }
+
         if (data.status === 'succeed') {
           activePolls.current.delete(taskId)
           setTasks((prev) =>
