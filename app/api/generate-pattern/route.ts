@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+const MODELS = ['nano-banana-pro', 'nano-banana-2'] as const
+
 export async function POST(request: NextRequest) {
   try {
     const { prompt } = await request.json() as { prompt: string }
@@ -10,38 +12,41 @@ export async function POST(request: NextRequest) {
 
     const apiKey = process.env.GEEKAI_API_KEY
     const baseUrl = process.env.GEEKAI_BASE_URL || 'https://geekai.co/api/v1'
-    const model = process.env.GEEKAI_IMAGE_MODEL || 'gpt-image-1'
 
     if (!apiKey) {
       return NextResponse.json({ error: '服务未配置 API Key' }, { status: 500 })
     }
 
-    const res = await fetch(`${baseUrl}/images/generations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        prompt: prompt.trim(),
-        n: 1,
-        size: '1024x1024',
-        async: true,
-      }),
-    })
+    // 同时提交两个模型，各生成 2 张
+    const results = await Promise.allSettled(
+      MODELS.map((model) =>
+        fetch(`${baseUrl}/images/generations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model,
+            prompt: prompt.trim(),
+            n: 2,
+            size: '1024x1024',
+            async: true,
+          }),
+        }).then((res) => res.json())
+      )
+    )
 
-    if (!res.ok) {
-      const errBody = await res.text()
-      console.error('Image generation error:', errBody)
-      return NextResponse.json({ error: `图片生成服务请求失败 (${res.status})` }, { status: 502 })
+    const taskIds: { taskId: string; model: string }[] = []
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i]
+      if (r.status === 'fulfilled' && r.value?.task_id) {
+        taskIds.push({ taskId: r.value.task_id, model: MODELS[i] })
+      }
     }
 
-    const data = await res.json()
-    const taskId = data.task_id
-
-    if (!taskId) {
-      return NextResponse.json({ error: '未获取到任务 ID，请重试' }, { status: 502 })
+    if (taskIds.length === 0) {
+      return NextResponse.json({ error: '所有模型提交失败，请重试' }, { status: 502 })
     }
 
-    return NextResponse.json({ taskId })
+    return NextResponse.json({ taskIds })
   } catch (error) {
     console.error('Generate pattern error:', error)
     return NextResponse.json({ error: '服务器内部错误，请稍后重试' }, { status: 500 })

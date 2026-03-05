@@ -28,9 +28,12 @@ export async function GET(
 
     const data = await res.json()
     const status = data.task_status as 'pending' | 'running' | 'succeed' | 'failed'
-    const imageUrl = status === 'succeed' ? (data.data?.[0]?.url ?? null) : null
+    const imageUrls: string[] =
+      status === 'succeed'
+        ? (data.data ?? []).map((d: { url?: string }) => d.url).filter(Boolean)
+        : []
 
-    return NextResponse.json({ status, imageUrl })
+    return NextResponse.json({ status, imageUrls })
   } catch (error) {
     console.error('Pattern status error:', error)
     return NextResponse.json({ error: '查询状态失败' }, { status: 500 })
