@@ -36,11 +36,11 @@ export async function POST(request: NextRequest) {
       )
     )
 
-    const taskIds: { taskId: string; model: string }[] = []
+    const taskIds: string[] = []
     for (let i = 0; i < results.length; i++) {
       const r = results[i]
       if (r.status === 'fulfilled' && r.value?.task_id) {
-        taskIds.push({ taskId: r.value.task_id, model: MODELS[i] })
+        taskIds.push(r.value.task_id)
       }
     }
 

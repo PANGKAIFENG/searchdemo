@@ -8,7 +8,6 @@ import { SchoolData, ImageResult, Step2Brief, PatternSuggestion } from '@/app/ty
 
 interface TaskEntry {
   taskId: string
-  model: string
   imageUrls: string[]
   done: boolean
   failed: boolean
@@ -127,8 +126,8 @@ function PatternCard({
         return
       }
 
-      const entries: TaskEntry[] = (data.taskIds as { taskId: string; model: string }[]).map(
-        ({ taskId, model }) => ({ taskId, model, imageUrls: [], done: false, failed: false })
+      const entries: TaskEntry[] = (data.taskIds as string[]).map(
+        (taskId) => ({ taskId, imageUrls: [], done: false, failed: false })
       )
       setTasks(entries)
       entries.forEach(({ taskId }) => pollTask(taskId))
