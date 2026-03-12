@@ -25,6 +25,7 @@ export default function HomePage() {
   const [schoolData, setSchoolData] = useState<SchoolData | null>(null)
   const [images, setImages] = useState<ImageResult[]>([])
   const [dataQuality, setDataQuality] = useState<DataQuality | null>(null)
+  const [collectStep, setCollectStep] = useState('')
 
   // 第一步：校验学校名称
   async function handleValidate(schoolName: string) {
@@ -79,19 +80,62 @@ export default function HomePage() {
     setSchoolData(null)
     setImages([])
     setDataQuality(null)
+    setCollectStep('')
 
     try {
-      // 先调 collect 获取文字数据和搜图关键词
+      // SSE 流式消费 collect 接口
       const collectRes = await fetch('/api/collect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ school_name: schoolName }),
       })
 
-      const collectData = await collectRes.json()
+      if (!collectRes.ok || !collectRes.body) {
+        setError('采集失败，请重试')
+        setPhase('idle')
+        return
+      }
 
-      if (!collectRes.ok) {
-        setError(collectData.error || '采集失败，请重试')
+      // 解析 SSE 事件流，等待 result 事件
+      let collectData: {
+        school_data: SchoolData
+        data_quality: DataQuality
+        image_search_hints: ImageSearchHints
+        citations: string[]
+      } | null = null
+
+      const reader = collectRes.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      outer: while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue
+          try {
+            const payload = JSON.parse(line.slice(5).trim())
+            if (payload.step) {
+              setCollectStep(payload.step)
+            } else if (payload.school_data) {
+              collectData = payload
+              break outer
+            } else if (payload.error) {
+              setError(payload.error)
+              setPhase('idle')
+              return
+            }
+          } catch {
+            // 忽略非 JSON 行
+          }
+        }
+      }
+
+      if (!collectData) {
+        setError('采集失败，请重试')
         setPhase('idle')
         return
       }
@@ -315,7 +359,7 @@ export default function HomePage() {
       {/* ── Phase: collecting ── */}
       {phase === 'collecting' && (
         <div className="max-w-3xl mx-auto px-6 py-10">
-          <LoadingProgress school={confirmedName} steps={COLLECT_STEPS} accentColor="#6366f1" />
+          <LoadingProgress school={confirmedName} steps={COLLECT_STEPS} accentColor="#6366f1" currentStep={collectStep} />
         </div>
       )}
 

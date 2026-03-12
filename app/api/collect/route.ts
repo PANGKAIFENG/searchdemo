@@ -1,9 +1,20 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { SchoolData, ImageSearchHints } from '@/app/types'
 import { extractJSON, sanitize } from '@/app/lib/utils'
 import { calcDataQuality } from '@/app/lib/quality-check'
 
-export const maxDuration = 60
+export const maxDuration = 300
+
+const SSE_HEADERS = {
+  'Content-Type': 'text/event-stream',
+  'Cache-Control': 'no-cache',
+  'Connection': 'keep-alive',
+  'X-Accel-Buffering': 'no',
+}
+
+function sseEvent(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+}
 
 const COLLECT_PROMPT = `你是院校文化资料采集专家，负责为学位服/校服设计项目收集学校的原始素材。
 
@@ -95,10 +106,10 @@ L2（可信度0.9）：访问学校官网首页
   - 提取校徽 SVG 中的 fill 颜色属性
 
 L3（可信度0.8）：搜索百度百科/维基百科院校词条
-  - 提取"标志色""主色调"等字段，必须记录来源 URL
+  - 提取「标志色」「主色调」等字段，必须记录来源 URL
 
 L4（可信度0.6）：搜索媒体报道
-  - 搜索："学校名" 校色 OR 主色 OR 品牌色 OR 校徽颜色 HEX
+  - 搜索：「学校名」 校色 OR 主色 OR 品牌色 OR 校徽颜色 HEX
   - 必须记录来源 URL
 
 L5（可信度0.4，兜底）：若以上均失败
@@ -115,97 +126,169 @@ L5（可信度0.4，兜底）：若以上均失败
 - image_search_hints.landmark 的关键词必须来自上面 landmarks.buildings 中的真实地标名称
 - 所有信息必须真实，无法查到的字段填【暂无】或【待核实】，禁止捏造`
 
+
+const PROGRESS_STEPS = [
+  '正在访问学校官网…',
+  '解析学校基本信息…',
+  '检索校史与重要节点…',
+  '搜索校训与精神理念…',
+  '识别标志性建筑与地标…',
+  '提取视觉符号与色彩体系…',
+]
+
 export async function POST(request: NextRequest) {
-  try {
-    const { school_name } = await request.json()
+  const { school_name } = await request.json().catch(() => ({}))
 
-    if (!school_name || typeof school_name !== 'string' || !school_name.trim()) {
-      return NextResponse.json({ error: '请输入学校名称' }, { status: 400 })
-    }
-
-    const apiKey = process.env.GEEKAI_API_KEY
-    const baseUrl = process.env.GEEKAI_BASE_URL || 'https://geekai.co/api/v1'
-    const model = process.env.GEEKAI_MODEL || 'gpt-4o'
-
-    if (!apiKey) {
-      return NextResponse.json({ error: '服务未配置 API Key' }, { status: 500 })
-    }
-
-    const schoolName = school_name.trim()
-
-    const aiResponse = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: COLLECT_PROMPT },
-          {
-            role: 'user',
-            content: `请采集【${schoolName}】的院校文化资料。联网搜索后直接输出 JSON，不要任何其他内容。`,
-          },
-        ],
-        enable_search: true,
-        temperature: 0.3,
-        max_tokens: 8000,
-        response_format: { type: 'json_object' },
-      }),
-    })
-
-    if (!aiResponse.ok) {
-      return NextResponse.json({ error: `AI 服务请求失败 (${aiResponse.status})` }, { status: 502 })
-    }
-
-    const aiData = await aiResponse.json()
-    const message = aiData.choices?.[0]?.message
-    const content = message?.content || message?.reasoning_content || ''
-
-    if (!content) {
-      return NextResponse.json({ error: 'AI 未返回有效内容' }, { status: 502 })
-    }
-
-    // 处理某些模型触发安全策略被阻断的情况
-    if (content.includes("I can't discuss that") || content.includes("I cannot fulfill this request")) {
-      return NextResponse.json({
-        error: '该学校的关联搜索触发了 AI 平台的安全策略，建议在学校名称后加上"大学官方"重新尝试，或换一所学校。',
-        raw: content,
-      }, { status: 502 })
-    }
-
-    let raw: Record<string, unknown>
-    try {
-      raw = extractJSON(content) as Record<string, unknown>
-    } catch {
-      return NextResponse.json({ error: 'AI 返回内容解析失败（可能是触发了安全限制或搜索异常），请重试', raw: content }, { status: 502 })
-    }
-
-    // 分离 image_search_hints 和 schoolData
-    const { image_search_hints, ...schoolDataRaw } = raw
-    const schoolData = schoolDataRaw as unknown as SchoolData
-    const hints = (image_search_hints as ImageSearchHints) || {
-      emblem: [`${schoolName} 校徽 官方 高清`],
-      landmark: [`${schoolName} 标志性建筑`, `${schoolName} 图书馆`],
-      scenery: [`${schoolName} 校园风景`, `${schoolName} 校园`],
-    }
-
-    const citations: string[] = aiData.citations || []
-
-    // 计算数据质量评分
-    const data_quality = calcDataQuality(schoolName, schoolData, citations)
-
-    return NextResponse.json({
-      school_name: schoolName,
-      school_data: schoolData,
-      data_quality,
-      image_search_hints: hints,
-      citations,
-    })
-  } catch (error) {
-    console.error('Collect API error:', error)
-    return NextResponse.json({ error: '服务器内部错误，请稍后重试' }, { status: 500 })
+  if (!school_name || typeof school_name !== 'string' || !school_name.trim()) {
+    return new Response(
+      sseEvent('error', { error: '请输入学校名称' }),
+      { status: 400, headers: SSE_HEADERS },
+    )
   }
+
+  const apiKey = process.env.GEEKAI_API_KEY
+  const baseUrl = process.env.GEEKAI_BASE_URL || 'https://geekai.co/api/v1'
+  const model = process.env.GEEKAI_MODEL || 'gpt-4o'
+
+  if (!apiKey) {
+    return new Response(
+      sseEvent('error', { error: '服务未配置 API Key' }),
+      { status: 500, headers: SSE_HEADERS },
+    )
+  }
+
+  const schoolName = school_name.trim()
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const enc = new TextEncoder()
+      const push = (event: string, data: unknown) =>
+        controller.enqueue(enc.encode(sseEvent(event, data)))
+
+      // 推送进度步骤（每 5s 一条，与 AI 请求并行）
+      let stepIdx = 0
+      const progressTimer = setInterval(() => {
+        if (stepIdx < PROGRESS_STEPS.length) {
+          push('progress', { step: PROGRESS_STEPS[stepIdx++] })
+        }
+      }, 5000)
+
+      // 立即推送第一条
+      push('progress', { step: PROGRESS_STEPS[stepIdx++] })
+
+      try {
+        const aiResponse = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: 'system', content: COLLECT_PROMPT },
+              {
+                role: 'user',
+                content: `请采集【${schoolName}】的院校文化资料。联网搜索后直接输出 JSON，不要任何其他内容。`,
+              },
+            ],
+            enable_search: true,
+            temperature: 0.3,
+            max_tokens: 8000,
+            stream: true,
+          }),
+        })
+
+        if (!aiResponse.ok || !aiResponse.body) {
+          clearInterval(progressTimer)
+          push('error', { error: `AI 服务请求失败 (${aiResponse.status})` })
+          controller.close()
+          return
+        }
+
+        // 逐 chunk 读取流式响应，拼接完整内容
+        const reader = aiResponse.body.getReader()
+        const decoder = new TextDecoder()
+        let fullContent = ''
+        let citations: string[] = []
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          const chunk = decoder.decode(value, { stream: true })
+          // OpenAI stream 格式：每行 "data: {...}" 或 "data: [DONE]"
+          for (const line of chunk.split('\n')) {
+            const trimmed = line.trim()
+            if (!trimmed.startsWith('data:')) continue
+            const payload = trimmed.slice(5).trim()
+            if (payload === '[DONE]') continue
+            try {
+              const parsed = JSON.parse(payload)
+              const delta = parsed.choices?.[0]?.delta?.content ?? ''
+              fullContent += delta
+              // 部分实现把 citations 放在最后一个 chunk 的顶层
+              if (parsed.citations) citations = parsed.citations
+            } catch {
+              // 忽略非 JSON 行
+            }
+          }
+        }
+
+        clearInterval(progressTimer)
+
+        if (!fullContent) {
+          push('error', { error: 'AI 未返回有效内容' })
+          controller.close()
+          return
+        }
+
+        if (
+          fullContent.includes("I can't discuss that") ||
+          fullContent.includes('I cannot fulfill this request')
+        ) {
+          push('error', {
+            error: '该学校的关联搜索触发了 AI 平台的安全策略，建议在学校名称后加上「大学官方」重新尝试。',
+          })
+          controller.close()
+          return
+        }
+
+        let raw: Record<string, unknown>
+        try {
+          raw = extractJSON(fullContent) as Record<string, unknown>
+        } catch {
+          push('error', { error: 'AI 返回内容解析失败，请重试' })
+          controller.close()
+          return
+        }
+
+        const { image_search_hints, ...schoolDataRaw } = raw
+        const schoolData = schoolDataRaw as unknown as SchoolData
+        const hints = (image_search_hints as ImageSearchHints) || {
+          emblem: [`${schoolName} 校徽 官方 高清`],
+          landmark: [`${schoolName} 标志性建筑`, `${schoolName} 图书馆`],
+          scenery: [`${schoolName} 校园风景`, `${schoolName} 校园`],
+        }
+
+        const data_quality = calcDataQuality(schoolName, schoolData, citations)
+
+        push('result', {
+          school_name: schoolName,
+          school_data: schoolData,
+          data_quality,
+          image_search_hints: hints,
+          citations,
+        })
+      } catch (err) {
+        clearInterval(progressTimer)
+        console.error('Collect SSE error:', err)
+        push('error', { error: '服务器内部错误，请稍后重试' })
+      } finally {
+        controller.close()
+      }
+    },
+  })
+
+  return new Response(stream, { headers: SSE_HEADERS })
 }
 
 // sanitize 仍在此处保留，以兼容 extractJSON 内部使用
-// 实际已统一到 lib/utils.ts，此处仅为向后兼容的类型导出
 export { sanitize }

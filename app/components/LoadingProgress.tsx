@@ -33,6 +33,7 @@ interface Props {
   title?: ReactNode
   steps?: LoadingStep[]
   accentColor?: string
+  currentStep?: string  // 后端推送的真实步骤文字，有值时覆盖假进度文字
 }
 
 export default function LoadingProgress({
@@ -40,6 +41,7 @@ export default function LoadingProgress({
   title,
   steps = COLLECT_STEPS,
   accentColor = '#1c1917',
+  currentStep,
 }: Props) {
   const [stepIndex, setStepIndex] = useState(0)
   const [elapsed, setElapsed] = useState(0)
@@ -71,7 +73,7 @@ export default function LoadingProgress({
   }, [school])
 
   const progress = Math.min((elapsed / totalMs) * 90, 90)
-  const currentLabel = steps[stepIndex]?.label ?? steps[steps.length - 1].label
+  const currentLabel = currentStep || (steps[stepIndex]?.label ?? steps[steps.length - 1].label)
 
   return (
     <div className="max-w-md mx-auto py-16 px-4">
