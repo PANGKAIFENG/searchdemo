@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { ValidateResult } from '@/app/types'
+import { extractJSON } from '@/app/lib/utils'
 
 export const maxDuration = 30
 
@@ -101,11 +102,4 @@ function buildUserMsg(input: string, region?: string, school_type?: string): str
   if (school_type) msg += `\n用户补充学校类型：${school_type}`
   msg += '\n\n请直接输出 JSON，不要任何其他内容。'
   return msg
-}
-
-function extractJSON(text: string): unknown {
-  const start = text.indexOf('{')
-  const end = text.lastIndexOf('}')
-  if (start !== -1 && end > start) return JSON.parse(text.slice(start, end + 1))
-  throw new Error('No JSON found')
 }

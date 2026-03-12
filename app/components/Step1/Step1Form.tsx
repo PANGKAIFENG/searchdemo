@@ -1,6 +1,6 @@
 'use client'
 
-import { SchoolData, StandardColor, TimelineItem, ImageResult } from '@/app/types'
+import { SchoolData, StandardColor, TimelineItem, ImageResult, DataQuality } from '@/app/types'
 import { useState } from 'react'
 
 // ─── 子组件 ────────────────────────────────────────────────
@@ -85,9 +85,9 @@ function ColorRow({
         />
         <input
           type="text"
-          value={color.description}
-          onChange={(e) => onChange({ ...color, description: e.target.value })}
-          placeholder="象征意义"
+          value={color.extraction_note ?? ''}
+          onChange={(e) => onChange({ ...color, extraction_note: e.target.value })}
+          placeholder="备注（如来源/象征意义）"
           className="flex-1 border border-stone-200 rounded px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-indigo-400"
         />
       </div>
@@ -208,6 +208,7 @@ interface Step1FormProps {
   schoolName: string
   initialData: SchoolData
   initialImages: ImageResult[]
+  dataQuality?: DataQuality
   onConfirm: (data: SchoolData, images: ImageResult[]) => void
 }
 
@@ -215,6 +216,7 @@ export default function Step1Form({
   schoolName,
   initialData,
   initialImages,
+  dataQuality,
   onConfirm,
 }: Step1FormProps) {
   const [data, setData] = useState<SchoolData>(initialData)
@@ -259,7 +261,7 @@ export default function Step1Form({
       ...prev,
       symbols: {
         ...prev.symbols,
-        standard_colors: [...prev.symbols.standard_colors, { name: '', hex: '#000000', description: '' }],
+        standard_colors: [...prev.symbols.standard_colors, { name: '', hex: '#000000', rgb: '', usage: 'primary' as const, source_level: 'L5' as const, source_url: '', confidence: 0.4, is_official: false, conflict: false }],
       },
     }))
   }
@@ -305,12 +307,26 @@ export default function Step1Form({
           <h2 className="text-xl font-bold text-stone-900">{schoolName}</h2>
           <p className="text-sm text-stone-400 mt-0.5">AI 已自动采集，请核对并修改后确认</p>
         </div>
-        <button
-          onClick={() => onConfirm(data, images)}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-6 py-2.5 rounded-xl transition text-sm flex-shrink-0"
-        >
-          确认数据，生成提案 →
-        </button>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          {dataQuality && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className={`px-2 py-1 rounded-full font-medium ${
+                dataQuality.verdict === '通过'
+                  ? 'bg-green-50 text-green-600'
+                  : 'bg-amber-50 text-amber-600'
+              }`}>
+                {dataQuality.verdict === '通过' ? '✓ 质量通过' : '⚠ 已补查'}
+              </span>
+              <span className="text-stone-400">完整度 {dataQuality.completeness_score}%</span>
+            </div>
+          )}
+          <button
+            onClick={() => onConfirm(data, images)}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-6 py-2.5 rounded-xl transition text-sm"
+          >
+            确认数据，生成提案 →
+          </button>
+        </div>
       </div>
 
       {/* 文字采集区 */}

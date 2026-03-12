@@ -5,7 +5,8 @@ import LoadingProgress, { COLLECT_STEPS } from '@/app/components/LoadingProgress
 import Step1Form from '@/app/components/Step1/Step1Form'
 import Step2View from '@/app/components/Step2/Step2View'
 import ValidateStep from '@/app/components/ValidateStep/ValidateStep'
-import { SchoolData, ImageResult, ValidateResult, ImageSearchHints } from '@/app/types'
+import { SchoolData, ImageResult, ValidateResult, ImageSearchHints, DataQuality } from '@/app/types'
+import { deepMerge } from '@/app/lib/utils'
 
 type Phase = 'idle' | 'validating' | 'ambiguous' | 'collecting' | 'review' | 'step2'
 
@@ -23,6 +24,7 @@ export default function HomePage() {
   // Step 1 data（文字 + 图片分开存）
   const [schoolData, setSchoolData] = useState<SchoolData | null>(null)
   const [images, setImages] = useState<ImageResult[]>([])
+  const [dataQuality, setDataQuality] = useState<DataQuality | null>(null)
 
   // 第一步：校验学校名称
   async function handleValidate(schoolName: string) {
@@ -76,6 +78,7 @@ export default function HomePage() {
     setError('')
     setSchoolData(null)
     setImages([])
+    setDataQuality(null)
 
     try {
       // 先调 collect 获取文字数据和搜图关键词
@@ -95,8 +98,40 @@ export default function HomePage() {
 
       const fetchedData: SchoolData = collectData.school_data
       const hints: ImageSearchHints = collectData.image_search_hints
+      const fetchedQuality: DataQuality = collectData.data_quality
 
-      // 有了 hints 后，并行采集图片（不阻断主流程）
+      // Step 3 → Step 4：verdict=需补查时自动调 refine
+      let finalData = fetchedData
+      let finalQuality = fetchedQuality
+
+      if (fetchedQuality?.verdict === '需补查' && fetchedQuality.missing_fields.length > 0) {
+        try {
+          const refineRes = await fetch('/api/collect/refine', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              school_name: schoolName,
+              confirmed_data: fetchedData,
+              missing_fields: fetchedQuality.missing_fields,
+              recommended_queries: fetchedQuality.recommended_queries,
+            }),
+          })
+          if (refineRes.ok) {
+            const refineData = await refineRes.json()
+            if (refineData.refined_data) {
+              finalData = deepMerge(
+                fetchedData as unknown as Record<string, unknown>,
+                refineData.refined_data as Record<string, unknown>,
+              ) as unknown as SchoolData
+              finalQuality = refineData.data_quality ?? fetchedQuality
+            }
+          }
+        } catch {
+          // refine 失败时静默降级，使用原始采集数据
+        }
+      }
+
+      // 有了 hints 后，采集图片（不阻断主流程）
       const imagesPromise = fetch('/api/images', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -121,8 +156,9 @@ export default function HomePage() {
         new Promise<ImageResult[]>((resolve) => setTimeout(() => resolve([]), 15000)),
       ])
 
-      setSchoolData(fetchedData)
+      setSchoolData(finalData)
       setImages(fetchedImages)
+      setDataQuality(finalQuality)
       setPhase('review')
     } catch {
       setError('网络错误，请检查连接后重试')
@@ -143,6 +179,7 @@ export default function HomePage() {
     setError('')
     setSchoolData(null)
     setImages([])
+    setDataQuality(null)
     setValidateResult(null)
   }
 
@@ -289,6 +326,7 @@ export default function HomePage() {
             schoolName={confirmedName}
             initialData={schoolData}
             initialImages={images}
+            dataQuality={dataQuality ?? undefined}
             onConfirm={handleConfirm}
           />
         </div>
