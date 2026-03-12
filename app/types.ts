@@ -1,4 +1,21 @@
-// ─── Step 1 数据采集 ───────────────────────────────────────
+// ─── 学校名称校验（接口① validate）────────────────────────
+export interface SchoolCandidate {
+  official_name: string
+  location: string
+  level: string      // 985/211/普通本科/专科/中小学 等
+  website: string
+  is_recommended: boolean
+  recommend_reason: string
+}
+
+export interface ValidateResult {
+  status: 'confirmed' | 'ambiguous' | 'not_found'
+  confirmed_name?: string    // status=confirmed 时
+  candidates?: SchoolCandidate[]  // status=ambiguous 时
+  error_message?: string    // status=not_found 时
+}
+
+// ─── Step 1 数据采集（8维度）────────────────────────────────
 
 export interface TimelineItem {
   year: string
@@ -63,59 +80,51 @@ export interface SchoolData {
   }
 }
 
-// ─── Step 2（现有，保持不变）────────────────────────────────
+// ─── 图片采集（接口③ images/collect）────────────────────────
 
-export interface PrimaryColor {
-  name: string
-  hex: string
-  meaning: string
+export type ImageCategory = 'emblem' | 'landmark' | 'scenery'
+
+/** 单张图片（含分类标注）*/
+export interface ImageResult {
+  category: ImageCategory          // 图片分类
+  category_label: string           // 中文分类说明，如"校园地标-未名湖"
+  search_keyword: string           // 搜索使用的关键词
+  title: string
+  imageUrl: string
+  link: string
+  source_domain: string            // 来源域名
+  is_official: boolean             // 是否来自 *.edu.cn
 }
 
-export interface VisualAssets {
-  primary_colors: PrimaryColor[]
-  landmarks: string[]
-  cultural_symbols: string[]
-  image_search_keywords: string[]
+/** 图片采集结果（按类别分组）*/
+export interface ImageAssets {
+  emblem: ImageResult[]
+  landmark: ImageResult[]
+  scenery: ImageResult[]
+  summary: {
+    total: number
+    emblem_count: number
+    landmark_count: number
+    scenery_count: number
+    missing_emblem: boolean
+    image_insufficient: boolean
+  }
 }
 
-export interface PatternSuggestions {
-  front_placket: string
-  cuffs: string
-  hood: string
+/** collect 接口同步返回的搜图关键词提示 */
+export interface ImageSearchHints {
+  emblem: string[]
+  landmark: string[]
+  scenery: string[]
 }
 
-export interface HistoryHighlight {
-  year: string
-  event: string
-}
-
-export interface Motto {
-  original: string
-  interpretation: string
-}
-
-export interface SchoolBrief {
-  school_name: string
-  school_abbr: string
-  region: string
-  school_type: string
-  design_theme: string
-  creative_foundation: string
-  visual_assets: VisualAssets
-  design_logic: string
-  pattern_suggestions: PatternSuggestions
-  school_history_highlights: HistoryHighlight[]
-  motto: Motto
-  citations: string[]
-}
-
-// ─── Step 2 设计提案 ─────────────────────────────────────
+// ─── Step 2 设计提案（接口④ design/brief）──────────────────
 
 export interface PatternSuggestion {
   position: '门襟' | '袖口' | '帽兜'
   rationale: string
   prompt: string
-  imageIndex: number
+  imageIndex: number   // 关联参考图片索引，-1 表示无
 }
 
 export interface Step2Brief {
@@ -123,13 +132,4 @@ export interface Step2Brief {
   creativeFoundation: string
   designLogic: string
   patternSuggestions: PatternSuggestion[]
-}
-
-// ─── 通用 ────────────────────────────────────────────────
-
-export interface ImageResult {
-  keyword: string
-  title: string
-  imageUrl: string
-  link: string
 }

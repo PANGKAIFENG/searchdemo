@@ -112,7 +112,7 @@ export async function POST(request: NextRequest) {
 
 function buildUserContent(data: SchoolData, images: ImageResult[]): string {
   const imageList = images
-    .map((img, i) => `  [${i}] ${img.title}（关键词：${img.keyword}）`)
+    .map((img, i) => `  [${i}] ${img.category_label} — ${img.title}（关键词：${img.search_keyword}）`)
     .join('\n')
 
   const colors = data.symbols.standard_colors
@@ -145,12 +145,21 @@ function buildUserContent(data: SchoolData, images: ImageResult[]): string {
 - 校花/校树：${data.ecology.plants}
 - 地理环境：${data.ecology.geography}
 
+【强势学科与成果】
+- 强势学科：${data.academics.strong_disciplines || '未填写'}
+- 重大成果：${data.academics.major_achievements || '未填写'}
+
+【营销话术】
+- 校长寄语：${data.marketing.president_message || '未填写'}
+- 学生昵称：${data.marketing.student_nickname || '未填写'}
+- 校园流行语：${data.marketing.campus_slogan || '未填写'}
+
 【历史节点】${timeline ? '\n' + timeline : '无'}
 
 【参考图片列表（用于 image_index 推荐）】
 ${imageList || '  无参考图片'}
 
-请严格按照 JSON 格式输出设计方案，image_index 从上述图片列表中选择。`
+请严格按照 JSON 格式输出设计方案，image_index 从上述图片列表中选择（地标图片优先用于相应位置的纹样推荐）。`
 }
 
 function normalizePatterns(raw: unknown): import('@/app/types').PatternSuggestion[] {

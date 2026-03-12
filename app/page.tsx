@@ -4,48 +4,125 @@ import { useState } from 'react'
 import LoadingProgress, { COLLECT_STEPS } from '@/app/components/LoadingProgress'
 import Step1Form from '@/app/components/Step1/Step1Form'
 import Step2View from '@/app/components/Step2/Step2View'
-import { SchoolData, ImageResult } from '@/app/types'
+import ValidateStep from '@/app/components/ValidateStep/ValidateStep'
+import { SchoolData, ImageResult, ValidateResult, ImageSearchHints } from '@/app/types'
 
-type Phase = 'idle' | 'collecting' | 'review' | 'step2'
+type Phase = 'idle' | 'validating' | 'ambiguous' | 'collecting' | 'review' | 'step2'
 
 const EXAMPLE_SCHOOLS = ['山东大学', '北京大学', '复旦大学', '浙江大学', '同济大学']
 
 export default function HomePage() {
   const [phase, setPhase] = useState<Phase>('idle')
   const [school, setSchool] = useState('')
+  const [confirmedName, setConfirmedName] = useState('')
   const [error, setError] = useState('')
 
-  // Step 1 data
+  // validate 结果
+  const [validateResult, setValidateResult] = useState<ValidateResult | null>(null)
+
+  // Step 1 data（文字 + 图片分开存）
   const [schoolData, setSchoolData] = useState<SchoolData | null>(null)
   const [images, setImages] = useState<ImageResult[]>([])
 
-  async function startCollect(schoolName: string) {
+  // 第一步：校验学校名称
+  async function handleValidate(schoolName: string) {
     const name = schoolName.trim()
     if (!name) return
 
     setSchool(name)
+    setPhase('validating')
+    setError('')
+
+    try {
+      const res = await fetch('/api/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: name }),
+      })
+
+      const data: ValidateResult = await res.json()
+
+      if (!res.ok) {
+        setError((data as unknown as { error: string }).error || '校验失败，请重试')
+        setPhase('idle')
+        return
+      }
+
+      if (data.status === 'confirmed' && data.confirmed_name) {
+        // 直接进入采集
+        await startCollect(data.confirmed_name)
+      } else if (data.status === 'ambiguous') {
+        setValidateResult(data)
+        setPhase('ambiguous')
+      } else {
+        setError(data.error_message || '未找到该学校，请输入更完整的名称')
+        setPhase('idle')
+      }
+    } catch {
+      setError('网络错误，请检查连接后重试')
+      setPhase('idle')
+    }
+  }
+
+  // 用户从候选列表中选择确认
+  async function handleCandidateSelect(selectedName: string) {
+    await startCollect(selectedName)
+  }
+
+  // 第二步：并行采集文字数据和图片
+  async function startCollect(schoolName: string) {
+    setConfirmedName(schoolName)
     setPhase('collecting')
     setError('')
     setSchoolData(null)
     setImages([])
 
     try {
-      const res = await fetch('/api/collect', {
+      // 先调 collect 获取文字数据和搜图关键词
+      const collectRes = await fetch('/api/collect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ school: name }),
+        body: JSON.stringify({ school_name: schoolName }),
       })
 
-      const data = await res.json()
+      const collectData = await collectRes.json()
 
-      if (!res.ok) {
-        setError(data.error || '采集失败，请重试')
+      if (!collectRes.ok) {
+        setError(collectData.error || '采集失败，请重试')
         setPhase('idle')
         return
       }
 
-      setSchoolData(data.schoolData)
-      setImages(data.images || [])
+      const fetchedData: SchoolData = collectData.school_data
+      const hints: ImageSearchHints = collectData.image_search_hints
+
+      // 有了 hints 后，并行采集图片（不阻断主流程）
+      const imagesPromise = fetch('/api/images', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ school_name: schoolName, search_hints: hints }),
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          const assets = d.assets
+          if (!assets) return []
+          // 将三类图片合并为平铺数组供 Step1Form 使用
+          return [
+            ...(assets.emblem || []),
+            ...(assets.landmark || []),
+            ...(assets.scenery || []),
+          ] as ImageResult[]
+        })
+        .catch(() => [] as ImageResult[])
+
+      // 等图片（最多 15s 超时）
+      const fetchedImages = await Promise.race([
+        imagesPromise,
+        new Promise<ImageResult[]>((resolve) => setTimeout(() => resolve([]), 15000)),
+      ])
+
+      setSchoolData(fetchedData)
+      setImages(fetchedImages)
       setPhase('review')
     } catch {
       setError('网络错误，请检查连接后重试')
@@ -62,9 +139,11 @@ export default function HomePage() {
   function handleReset() {
     setPhase('idle')
     setSchool('')
+    setConfirmedName('')
     setError('')
     setSchoolData(null)
     setImages([])
+    setValidateResult(null)
   }
 
   return (
@@ -77,6 +156,16 @@ export default function HomePage() {
             <span className="ml-1 text-xs text-stone-400">AI 驱动</span>
           </button>
           <div className="flex items-center gap-4">
+            {(phase === 'validating') && (
+              <span className="text-xs text-orange-600 font-medium bg-orange-50 px-3 py-1 rounded-full">
+                校验学校名称…
+              </span>
+            )}
+            {phase === 'ambiguous' && (
+              <span className="text-xs text-amber-600 font-medium bg-amber-50 px-3 py-1 rounded-full">
+                请选择学校
+              </span>
+            )}
             {phase === 'review' && (
               <span className="text-xs text-indigo-600 font-medium bg-indigo-50 px-3 py-1 rounded-full">
                 Step 1 · 资料核对
@@ -109,12 +198,12 @@ export default function HomePage() {
                   type="text"
                   value={school}
                   onChange={(e) => setSchool(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && startCollect(school)}
-                  placeholder="例如：山东大学"
+                  onKeyDown={(e) => e.key === 'Enter' && handleValidate(school)}
+                  placeholder="例如：北大、山东大学、华师"
                   className="flex-1 border border-stone-200 rounded-xl px-5 py-3 text-stone-800 text-base outline-none focus:ring-2 focus:ring-stone-800 focus:border-transparent transition"
                 />
                 <button
-                  onClick={() => startCollect(school)}
+                  onClick={() => handleValidate(school)}
                   disabled={!school.trim()}
                   className="bg-stone-900 hover:bg-stone-700 disabled:bg-stone-300 text-white font-semibold px-7 py-3 rounded-xl transition text-base flex-shrink-0"
                 >
@@ -126,7 +215,7 @@ export default function HomePage() {
                 {EXAMPLE_SCHOOLS.map((s) => (
                   <button
                     key={s}
-                    onClick={() => startCollect(s)}
+                    onClick={() => handleValidate(s)}
                     className="text-xs text-stone-500 hover:text-stone-800 bg-stone-100 hover:bg-stone-200 px-3 py-1.5 rounded-full transition"
                   >
                     {s}
@@ -166,10 +255,30 @@ export default function HomePage() {
         </>
       )}
 
+      {/* ── Phase: validating ── */}
+      {phase === 'validating' && (
+        <div className="max-w-3xl mx-auto px-6 py-20 text-center">
+          <div className="text-4xl mb-4 animate-pulse">🔍</div>
+          <p className="text-stone-600 text-base">正在识别「{school}」…</p>
+        </div>
+      )}
+
+      {/* ── Phase: ambiguous（歧义，候选选择）── */}
+      {phase === 'ambiguous' && validateResult && (
+        <div className="max-w-3xl mx-auto px-6 py-8">
+          <ValidateStep
+            inputName={school}
+            result={validateResult}
+            onSelect={handleCandidateSelect}
+            onBack={handleReset}
+          />
+        </div>
+      )}
+
       {/* ── Phase: collecting ── */}
       {phase === 'collecting' && (
         <div className="max-w-3xl mx-auto px-6 py-10">
-          <LoadingProgress school={school} steps={COLLECT_STEPS} accentColor="#6366f1" />
+          <LoadingProgress school={confirmedName} steps={COLLECT_STEPS} accentColor="#6366f1" />
         </div>
       )}
 
@@ -177,7 +286,7 @@ export default function HomePage() {
       {phase === 'review' && schoolData && (
         <div className="max-w-3xl mx-auto px-6 py-8">
           <Step1Form
-            schoolName={school}
+            schoolName={confirmedName}
             initialData={schoolData}
             initialImages={images}
             onConfirm={handleConfirm}
@@ -189,7 +298,7 @@ export default function HomePage() {
       {phase === 'step2' && schoolData && (
         <div className="max-w-3xl mx-auto px-6 py-8">
           <Step2View
-            schoolName={school}
+            schoolName={confirmedName}
             schoolData={schoolData}
             images={images}
             onReset={handleReset}

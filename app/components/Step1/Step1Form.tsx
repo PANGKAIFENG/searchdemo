@@ -149,6 +149,7 @@ function ImageCard({
       </div>
       <div className="px-2 py-1.5">
         <p className="text-xs text-stone-500 truncate">{image.title}</p>
+        <p className="text-xs text-indigo-400 truncate mt-0.5">{image.category_label}</p>
       </div>
       <button
         onClick={onDelete}
@@ -156,6 +157,47 @@ function ImageCard({
       >
         ×
       </button>
+    </div>
+  )
+}
+
+// 图片分类区块
+function ImageSection({
+  label,
+  emoji,
+  items,
+  onDelete,
+}: {
+  label: string
+  emoji: string
+  items: ImageResult[]
+  onDelete: (idx: number) => void
+}) {
+  if (items.length === 0) {
+    return (
+      <div className="bg-stone-50 rounded-xl p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <span>{emoji}</span>
+          <span className="text-xs font-semibold text-stone-600">{label}</span>
+          <span className="text-xs text-stone-300 ml-auto">0 张</span>
+        </div>
+        <p className="text-xs text-stone-300 text-center py-4">暂无图片</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-stone-50 rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <span>{emoji}</span>
+        <span className="text-xs font-semibold text-stone-600">{label}</span>
+        <span className="text-xs text-stone-400 ml-auto">{items.length} 张</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {items.map((img, i) => (
+          <ImageCard key={img.imageUrl + i} image={img} onDelete={() => onDelete(i)} />
+        ))}
+      </div>
     </div>
   )
 }
@@ -242,6 +284,17 @@ export default function Step1Form({
     }))
   }
 
+  // 按分类过滤图片
+  const emblemImgs = images.filter((img) => img.category === 'emblem')
+  const landmarkImgs = images.filter((img) => img.category === 'landmark')
+  const sceneryImgs = images.filter((img) => img.category === 'scenery')
+
+  function deleteImageByCategory(category: string, localIdx: number) {
+    const catImgs = images.filter((img) => img.category === category)
+    const targetImg = catImgs[localIdx]
+    setImages((prev) => prev.filter((img) => img !== targetImg))
+  }
+
   const cardClass = 'bg-white rounded-2xl border border-stone-100 shadow-sm p-6'
 
   return (
@@ -276,7 +329,7 @@ export default function Step1Form({
           <Field label="地理位置" value={data.basic.location} onChange={(v) => update('basic', { location: v })} />
         </div>
         <div className="mt-4">
-          <Field label="院校简介" value={data.basic.introduction} onChange={(v) => update('basic', { introduction: v })} multiline placeholder="100-200字，涵盖学校定位、规模、特色" />
+          <Field label="院校简介" value={data.basic.introduction} onChange={(v) => update('basic', { introduction: v })} multiline placeholder="约500字，涵盖历史沿革、办学定位、总体规模、核心优势" />
         </div>
       </div>
 
@@ -381,24 +434,33 @@ export default function Step1Form({
 
       <div className={cardClass}>
         <div className="flex items-center justify-between mb-4">
-          <SectionHeader title="地标实拍图" />
-          <p className="text-xs text-stone-400">用于后续纹样生成的参考图，可删除不相关图片</p>
+          <SectionHeader title="图片素材（按分类）" />
+          <p className="text-xs text-stone-400">可删除不相关图片</p>
         </div>
-        <div className="grid grid-cols-3 gap-3">
-          {images.map((img, i) => (
-            <ImageCard
-              key={img.imageUrl}
-              image={img}
-              onDelete={() => setImages((prev) => prev.filter((_, idx) => idx !== i))}
-            />
-          ))}
+        <div className="space-y-4">
+          <ImageSection
+            label="校徽"
+            emoji="🏅"
+            items={emblemImgs}
+            onDelete={(i) => deleteImageByCategory('emblem', i)}
+          />
+          <ImageSection
+            label="校园地标"
+            emoji="🏛"
+            items={landmarkImgs}
+            onDelete={(i) => deleteImageByCategory('landmark', i)}
+          />
+          <ImageSection
+            label="校园风景"
+            emoji="🌿"
+            items={sceneryImgs}
+            onDelete={(i) => deleteImageByCategory('scenery', i)}
+          />
         </div>
-        {images.length === 0 && (
-          <p className="text-center text-stone-300 text-sm py-8">暂无图片</p>
-        )}
       </div>
 
       <div className="pb-8" />
     </div>
   )
 }
+
