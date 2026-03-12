@@ -85,9 +85,16 @@ function ColorRow({
         />
         <input
           type="text"
-          value={color.extraction_note ?? ''}
-          onChange={(e) => onChange({ ...color, extraction_note: e.target.value })}
-          placeholder="备注（如来源/象征意义）"
+          value={color.source_url || color.extraction_note || ''}
+          onChange={(e) => {
+            const val = e.target.value
+            onChange({
+              ...color,
+              source_url: val,
+              extraction_note: color.source_level === 'L5' ? val : (color.extraction_note ?? ''),
+            })
+          }}
+          placeholder="来源 URL 或备注"
           className="flex-1 border border-stone-200 rounded px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-indigo-400"
         />
       </div>
