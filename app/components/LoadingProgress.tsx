@@ -18,6 +18,18 @@ export const COLLECT_STEPS: LoadingStep[] = [
   { label: '整合所有信息汇总呈现中', duration: 99999 },
 ]
 
+export const COLLECT_PRECISE_STEPS: LoadingStep[] = [
+  { label: '搜索学校官网与权威来源', duration: 3000 },
+  { label: '检索基本面与校史资料', duration: 4000 },
+  { label: '检索校训、校歌与文化信息', duration: 4000 },
+  { label: '检索校徽、校色与视觉标识', duration: 4000 },
+  { label: '提取基本面与学术信息', duration: 5000 },
+  { label: '提取文化灵魂与符号语义', duration: 5000 },
+  { label: '提取地标、生态与营销信息', duration: 5000 },
+  { label: '检索图片素材', duration: 5000 },
+  { label: '整合所有信息汇总呈现中', duration: 99999 },
+]
+
 export const BRIEF_STEPS: LoadingStep[] = [
   { label: '分析院校文化内涵', duration: 3000 },
   { label: '提炼设计主题与灵感来源', duration: 4000 },
@@ -92,7 +104,7 @@ export default function LoadingProgress({
             style={{ width: `${progress}%`, backgroundColor: accentColor }}
           />
         </div>
-        <p className="text-xs text-stone-400 mt-2 text-right">预计需要 30 秒</p>
+        <p className="text-xs text-stone-400 mt-2 text-right">预计需要 {Math.round(totalMs / 1000)} 秒</p>
       </div>
 
       <div className="space-y-2.5">

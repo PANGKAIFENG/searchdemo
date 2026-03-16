@@ -1,3 +1,6 @@
+// ─── 采集模式 ──────────────────────────────────────────────
+export type CollectMode = 'precise' | 'fast'
+
 // ─── 学校名称校验（接口① validate）────────────────────────
 export interface SchoolCandidate {
   official_name: string
@@ -11,6 +14,7 @@ export interface SchoolCandidate {
 export interface ValidateResult {
   status: 'confirmed' | 'ambiguous' | 'not_found'
   confirmed_name?: string    // status=confirmed 时
+  edu_domain?: string        // 学校官网域名（如 tsinghua.edu.cn）
   candidates?: SchoolCandidate[]  // status=ambiguous 时
   error_message?: string    // status=not_found 时
 }

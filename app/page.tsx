@@ -1,11 +1,11 @@
 'use client'
 
 import { useState } from 'react'
-import LoadingProgress, { COLLECT_STEPS } from '@/app/components/LoadingProgress'
+import LoadingProgress, { COLLECT_STEPS, COLLECT_PRECISE_STEPS } from '@/app/components/LoadingProgress'
 import Step1Form from '@/app/components/Step1/Step1Form'
 import Step2View from '@/app/components/Step2/Step2View'
 import ValidateStep from '@/app/components/ValidateStep/ValidateStep'
-import { SchoolData, ImageResult, ValidateResult, ImageSearchHints, DataQuality } from '@/app/types'
+import { SchoolData, ImageResult, ValidateResult, ImageSearchHints, DataQuality, CollectMode } from '@/app/types'
 import { deepMerge } from '@/app/lib/utils'
 
 type Phase = 'idle' | 'validating' | 'ambiguous' | 'collecting' | 'review' | 'step2'
@@ -15,6 +15,7 @@ const EXAMPLE_SCHOOLS = ['山东大学', '北京大学', '复旦大学', '浙江
 export default function HomePage() {
   const [phase, setPhase] = useState<Phase>('idle')
   const [school, setSchool] = useState('')
+  const [collectMode, setCollectMode] = useState<CollectMode>('precise')
   const [confirmedName, setConfirmedName] = useState('')
   const [error, setError] = useState('')
 
@@ -82,9 +83,12 @@ export default function HomePage() {
     setDataQuality(null)
     setCollectStep('')
 
+    // 根据模式选择不同的采集接口
+    const collectEndpoint = collectMode === 'precise' ? '/api/collect-precise' : '/api/collect'
+
     try {
       // SSE 流式消费 collect 接口
-      const collectRes = await fetch('/api/collect', {
+      const collectRes = await fetch(collectEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ school_name: schoolName }),
@@ -158,6 +162,7 @@ export default function HomePage() {
               confirmed_data: fetchedData,
               missing_fields: fetchedQuality.missing_fields,
               recommended_queries: fetchedQuality.recommended_queries,
+              mode: collectMode,
             }),
           })
           if (refineRes.ok) {
@@ -175,11 +180,28 @@ export default function HomePage() {
         }
       }
 
+      // 将 ecology.plants 中的校花/校树追加到 scenery 搜索词，确保生态图片能被选中
+      const ecologyKeywords: string[] = []
+      if (finalData.ecology?.plants) {
+        // 从 "校花：白玉兰；校树：法国梧桐" 中提取植物名
+        const plantNames = finalData.ecology.plants
+          .replace(/校花[：:]/g, '')
+          .replace(/校树[：:]/g, '')
+          .split(/[；;，,、\s]+/)
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0 && s.length <= 6)
+        plantNames.forEach((name) => ecologyKeywords.push(`${schoolName} ${name}`))
+      }
+      const enrichedHints: ImageSearchHints = {
+        ...hints,
+        scenery: [...hints.scenery, ...ecologyKeywords],
+      }
+
       // 有了 hints 后，采集图片（不阻断主流程）
       const imagesPromise = fetch('/api/images', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ school_name: schoolName, search_hints: hints }),
+        body: JSON.stringify({ school_name: schoolName, search_hints: enrichedHints }),
       })
         .then((r) => r.json())
         .then((d) => {
@@ -292,6 +314,47 @@ export default function HomePage() {
                 </button>
               </div>
 
+              {/* 采集模式选择 */}
+              <div className="mt-4 flex justify-center gap-6">
+                <label className={`flex items-center gap-2 cursor-pointer px-4 py-2 rounded-lg transition ${
+                  collectMode === 'precise' ? 'bg-indigo-50 ring-1 ring-indigo-200' : 'hover:bg-stone-50'
+                }`}>
+                  <input
+                    type="radio"
+                    name="collectMode"
+                    value="precise"
+                    checked={collectMode === 'precise'}
+                    onChange={() => setCollectMode('precise')}
+                    className="accent-indigo-600"
+                  />
+                  <div className="text-left">
+                    <span className={`text-sm font-medium ${collectMode === 'precise' ? 'text-indigo-700' : 'text-stone-700'}`}>
+                      精准模式
+                    </span>
+                    <span className="text-xs text-indigo-500 ml-1">推荐</span>
+                    <p className="text-xs text-stone-400">先搜索权威来源再提取，更准确</p>
+                  </div>
+                </label>
+                <label className={`flex items-center gap-2 cursor-pointer px-4 py-2 rounded-lg transition ${
+                  collectMode === 'fast' ? 'bg-amber-50 ring-1 ring-amber-200' : 'hover:bg-stone-50'
+                }`}>
+                  <input
+                    type="radio"
+                    name="collectMode"
+                    value="fast"
+                    checked={collectMode === 'fast'}
+                    onChange={() => setCollectMode('fast')}
+                    className="accent-amber-600"
+                  />
+                  <div className="text-left">
+                    <span className={`text-sm font-medium ${collectMode === 'fast' ? 'text-amber-700' : 'text-stone-700'}`}>
+                      快速模式
+                    </span>
+                    <p className="text-xs text-stone-400">LLM 直接联网搜索，更快速</p>
+                  </div>
+                </label>
+              </div>
+
               <div className="mt-4 flex flex-wrap gap-2 justify-center">
                 {EXAMPLE_SCHOOLS.map((s) => (
                   <button
@@ -359,7 +422,12 @@ export default function HomePage() {
       {/* ── Phase: collecting ── */}
       {phase === 'collecting' && (
         <div className="max-w-3xl mx-auto px-6 py-10">
-          <LoadingProgress school={confirmedName} steps={COLLECT_STEPS} accentColor="#6366f1" currentStep={collectStep} />
+          <LoadingProgress
+            school={confirmedName}
+            steps={collectMode === 'precise' ? COLLECT_PRECISE_STEPS : COLLECT_STEPS}
+            accentColor="#6366f1"
+            currentStep={collectStep}
+          />
         </div>
       )}
 

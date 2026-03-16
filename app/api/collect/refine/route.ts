@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { SchoolData } from '@/app/types'
 import { extractJSON, deepMerge } from '@/app/lib/utils'
 import { calcDataQuality } from '@/app/lib/quality-check'
+import {
+  buildRefineSearchQueries,
+  callWebSearch,
+  formatSearchResultsAsContext,
+  extractCitations as extractSearchCitations,
+  type DimensionSearchResult,
+} from '@/app/lib/web-search'
 
 export const maxDuration = 60
 
@@ -31,11 +38,13 @@ export async function POST(request: NextRequest) {
       confirmed_data,
       missing_fields,
       recommended_queries,
+      mode,
     } = body as {
       school_name: string
       confirmed_data: Partial<SchoolData>
       missing_fields: string[]
       recommended_queries?: string[]
+      mode?: 'precise' | 'fast'
     }
 
     if (!school_name?.trim()) {
@@ -56,19 +65,37 @@ export async function POST(request: NextRequest) {
     const schoolName = school_name.trim()
     const systemPrompt = buildRefinePrompt(schoolName, confirmed_data, missing_fields, recommended_queries ?? [])
 
+    // 精准模式：先用 web_search 搜索缺失字段，注入上下文
+    let searchContext = ''
+    let searchCitations: string[] = []
+    if (mode === 'precise') {
+      try {
+        const refineQueries = buildRefineSearchQueries(schoolName, missing_fields)
+        const searchResults = await executeRefineSearch(refineQueries, apiKey, baseUrl)
+        searchContext = formatSearchResultsAsContext(searchResults)
+        searchCitations = extractSearchCitations(searchResults)
+      } catch {
+        // 搜索失败时静默降级到纯 LLM 模式
+      }
+    }
+
+    const finalSystemPrompt = searchContext
+      ? `${systemPrompt}\n\n以下是从权威来源检索到的补充内容（请以此为准，禁止编造）：\n\n${searchContext}`
+      : systemPrompt
+
     const aiResponse = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
         messages: [
-          { role: 'system', content: systemPrompt },
+          { role: 'system', content: finalSystemPrompt },
           {
             role: 'user',
             content: `请对【${schoolName}】的以下缺失字段进行定向补查，直接输出 JSON，不要任何其他内容：\n${missing_fields.join('\n')}`,
           },
         ],
-        enable_search: true,
+        enable_search: mode !== 'precise',  // 精准模式已有搜索上下文，不需要黑箱搜索
         temperature: 0.2,
         max_tokens: 4000,
         response_format: { type: 'json_object' },
@@ -94,9 +121,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'AI 返回内容解析失败，请重试', raw: content }, { status: 502 })
     }
 
-    // 将补查结果与原始已确认数据深度合并
     const mergedData = deepMerge(confirmed_data as Record<string, unknown>, refinedRaw) as unknown as SchoolData
-    const citations: string[] = aiData.citations || []
+    const aiCitations: string[] = aiData.citations || []
+    const citations = [...new Set([...aiCitations, ...searchCitations])]
     const data_quality = calcDataQuality(schoolName, mergedData, citations)
 
     return NextResponse.json({
@@ -197,4 +224,28 @@ function buildFieldStrategies(schoolName: string, missingFields: string[]): stri
   }
 
   return strategies.length > 0 ? strategies.join('\n\n') : '请针对以下缺失字段进行精准搜索：\n' + missingFields.join('\n')
+}
+
+/**
+ * 精准模式下执行 refine 搜索
+ */
+async function executeRefineSearch(
+  queries: ReturnType<typeof buildRefineSearchQueries>,
+  apiKey: string,
+  baseUrl: string,
+): Promise<DimensionSearchResult[]> {
+  const settled = await Promise.allSettled(
+    queries.map(async (query) => {
+      const results = await callWebSearch(query, apiKey, baseUrl)
+      return {
+        dimension: 'refine',
+        query: query.prompt,
+        results,
+      } as DimensionSearchResult
+    }),
+  )
+
+  return settled
+    .filter((r): r is PromiseFulfilledResult<DimensionSearchResult> => r.status === 'fulfilled')
+    .map((r) => r.value)
 }

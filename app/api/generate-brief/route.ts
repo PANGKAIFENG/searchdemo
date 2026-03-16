@@ -58,7 +58,8 @@ function buildBriefPrompt(style: DesignStyle): string {
 }
 
 注意：
-- image_index 是参考图片列表中最相关图片的索引（从0开始），不相关时填 -1
+- image_index 必须是参考图片列表中的有效索引（0 到 N-1），严禁填 -1；若无完全匹配，选最接近主题的已有图片
+- 【无图片的元素】列表中的元素，禁止在 prompt 字段中作为视觉主体引用；可在 rationale 中提及，但 prompt 只描述有图片支撑的视觉元素
 - 三个位置的纹样在文化元素上应相互呼应，形成完整的视觉叙事
 - prompt 要具体描述纹样的视觉特征、文化元素，越具体越好
 - color_palette 优先使用学校 standard_colors 中提供的 HEX 值
@@ -192,6 +193,9 @@ ${marketingSection}
 【参考图片列表（用于 image_index 推荐）】
 ${imageList || '  无参考图片'}
 
+【图片覆盖分析】
+${buildImageCoverageAnalysis(data, images)}
+
 请严格按照 JSON 格式输出设计方案，image_index 从上述图片列表中选择（地标图片优先用于相应位置的纹样推荐）。`
 }
 
@@ -230,6 +234,43 @@ function buildMarketingSection(data: SchoolData): string {
   }
 
   return parts.length > 1 ? parts.join('\n') : ''
+}
+
+function buildImageCoverageAnalysis(data: SchoolData, images: ImageResult[]): string {
+  if (images.length === 0) return '无参考图片，所有 image_index 填 0（如有图片）或跳过视觉引用。'
+
+  // 从图片 category_label 和 search_keyword 提取关键词集合
+  const coveredKeywords = new Set<string>()
+  images.forEach((img) => {
+    const label = img.category_label || ''
+    const kw = img.search_keyword || ''
+    const labelSuffix = label.replace(/^校园地标-|^校园风景-/, '').trim()
+    if (labelSuffix) coveredKeywords.add(labelSuffix)
+    const kwSuffix = kw.replace(data.basic?.full_name || '', '').replace(data.basic?.short_name || '', '').trim()
+    if (kwSuffix) coveredKeywords.add(kwSuffix)
+  })
+
+  // 检查校花/校树是否有图片覆盖
+  const uncovered: string[] = []
+  if (data.ecology?.plants) {
+    const plantNames = data.ecology.plants
+      .replace(/校花[：:]/g, '').replace(/校树[：:]/g, '')
+      .split(/[；;，,、\s]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && s.length <= 8)
+
+    plantNames.forEach((name) => {
+      const hasCoverage = Array.from(coveredKeywords).some((kw) => kw.includes(name) || name.includes(kw))
+      if (!hasCoverage) uncovered.push(name)
+    })
+  }
+
+  const coveredList = `有图片支撑的元素：${images.map((img, i) => `${img.category_label}（index ${i}）`).join('、')}`
+  const uncoveredList = uncovered.length > 0
+    ? `\n无图片的元素（禁止在 prompt 中作为视觉主体引用）：${uncovered.join('、')}`
+    : '\n所有主要文化元素均有图片支撑。'
+
+  return coveredList + uncoveredList
 }
 
 function normalizeColorPalette(raw: unknown): Step2Brief['colorPalette'] {
