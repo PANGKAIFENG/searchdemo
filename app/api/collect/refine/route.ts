@@ -10,25 +10,16 @@ import {
   type DimensionSearchResult,
 } from '@/app/lib/web-search'
 
-export const maxDuration = 60
+export const maxDuration = 120
 
 /**
  * POST /api/collect/refine
  *
- * 兜底补查接口（PRD Step 4）：当 collect 返回的 data_quality.verdict 为"需补查"时，
+ * 兜底补查接口：当 collect 返回的 data_quality.verdict 为"需补查"时，
  * 针对缺失/低可信度字段进行定向二次检索。
  *
- * Request Body:
- *   school_name        string            必填：已确认的学校全称
- *   confirmed_data     Partial<SchoolData>  必填：已确认准确的字段（不会重复检索）
- *   missing_fields     string[]          必填：需补查的字段路径（来自 data_quality.missing_fields）
- *   recommended_queries  string[]        可选：quality-check 生成的推荐搜索词
- *
- * Response:
- *   status            'success' | 'partial'
- *   refined_data      Partial<SchoolData>   仅包含补查到的字段
- *   data_quality      DataQuality           合并后重新评分
- *   citations         string[]
+ * 精准模式使用 /responses 接口 + web_search_preview
+ * 快速模式使用 /chat/completions 接口 + enable_search
  */
 export async function POST(request: NextRequest) {
   try {
@@ -56,7 +47,7 @@ export async function POST(request: NextRequest) {
 
     const apiKey = process.env.GEEKAI_API_KEY
     const baseUrl = process.env.GEEKAI_BASE_URL || 'https://geekai.co/api/v1'
-    const model = process.env.GEEKAI_MODEL || 'gpt-4o'
+    const model = process.env.GEEKAI_MODEL || 'gpt-5.4-pro'
 
     if (!apiKey) {
       return NextResponse.json({ error: '服务未配置 API Key' }, { status: 500 })
@@ -64,51 +55,96 @@ export async function POST(request: NextRequest) {
 
     const schoolName = school_name.trim()
     const systemPrompt = buildRefinePrompt(schoolName, confirmed_data, missing_fields, recommended_queries ?? [])
+    const userInput = `请对【${schoolName}】的以下缺失字段进行定向补查，直接输出 JSON，不要任何其他内容：\n${missing_fields.join('\n')}`
 
-    // 精准模式：先用 web_search 搜索缺失字段，注入上下文
-    let searchContext = ''
-    let searchCitations: string[] = []
+    let content = ''
+    let responseCitations: string[] = []
+
     if (mode === 'precise') {
+      // 精准模式：使用 /responses 接口 + web_search_preview
+      const aiResponse = await fetch(`${baseUrl}/responses`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          instructions: systemPrompt,
+          input: userInput,
+          tools: [{ type: 'web_search_preview' }],
+          temperature: 0.2,
+          max_output_tokens: 8000,
+        }),
+      })
+
+      if (!aiResponse.ok) {
+        return NextResponse.json({ error: `AI 服务请求失败 (${aiResponse.status})` }, { status: 502 })
+      }
+
+      const data = await aiResponse.json()
+
+      for (const item of data.output ?? []) {
+        if (item.type === 'message' && item.content) {
+          for (const c of item.content) {
+            if (c.type === 'output_text') {
+              content += c.text
+              if (c.annotations) {
+                for (const ann of c.annotations) {
+                  if (ann.url) responseCitations.push(ann.url)
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // 提取 markdown 链接中的 URL
+      const urlMatches = content.matchAll(/\[.*?\]\((https?:\/\/[^\s)]+)\)/g)
+      for (const match of urlMatches) {
+        if (!responseCitations.includes(match[1])) responseCitations.push(match[1])
+      }
+    } else {
+      // 快速模式：使用 /chat/completions + enable_search
+      // 先用 web_search 搜索缺失字段，注入上下文
+      let searchContext = ''
       try {
         const refineQueries = buildRefineSearchQueries(schoolName, missing_fields)
         const searchResults = await executeRefineSearch(refineQueries, apiKey, baseUrl)
         searchContext = formatSearchResultsAsContext(searchResults)
-        searchCitations = extractSearchCitations(searchResults)
+        responseCitations = extractSearchCitations(searchResults)
       } catch {
-        // 搜索失败时静默降级到纯 LLM 模式
+        // 搜索失败时静默降级
       }
+
+      const finalSystemPrompt = searchContext
+        ? `${systemPrompt}\n\n以下是从权威来源检索到的补充内容（请以此为准，禁止编造）：\n\n${searchContext}`
+        : systemPrompt
+
+      const aiResponse = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: finalSystemPrompt },
+            { role: 'user', content: userInput },
+          ],
+          enable_search: !searchContext,
+          temperature: 0.2,
+          max_tokens: 4000,
+          response_format: { type: 'json_object' },
+        }),
+      })
+
+      if (!aiResponse.ok) {
+        return NextResponse.json({ error: `AI 服务请求失败 (${aiResponse.status})` }, { status: 502 })
+      }
+
+      const aiData = await aiResponse.json()
+      const message = aiData.choices?.[0]?.message
+      content = message?.content || message?.reasoning_content || ''
+
+      const aiCitations: string[] = aiData.citations || []
+      responseCitations = [...new Set([...responseCitations, ...aiCitations])]
     }
-
-    const finalSystemPrompt = searchContext
-      ? `${systemPrompt}\n\n以下是从权威来源检索到的补充内容（请以此为准，禁止编造）：\n\n${searchContext}`
-      : systemPrompt
-
-    const aiResponse = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: finalSystemPrompt },
-          {
-            role: 'user',
-            content: `请对【${schoolName}】的以下缺失字段进行定向补查，直接输出 JSON，不要任何其他内容：\n${missing_fields.join('\n')}`,
-          },
-        ],
-        enable_search: mode !== 'precise',  // 精准模式已有搜索上下文，不需要黑箱搜索
-        temperature: 0.2,
-        max_tokens: 4000,
-        response_format: { type: 'json_object' },
-      }),
-    })
-
-    if (!aiResponse.ok) {
-      return NextResponse.json({ error: `AI 服务请求失败 (${aiResponse.status})` }, { status: 502 })
-    }
-
-    const aiData = await aiResponse.json()
-    const message = aiData.choices?.[0]?.message
-    const content = message?.content || message?.reasoning_content || ''
 
     if (!content) {
       return NextResponse.json({ error: 'AI 未返回有效内容' }, { status: 502 })
@@ -122,8 +158,7 @@ export async function POST(request: NextRequest) {
     }
 
     const mergedData = deepMerge(confirmed_data as Record<string, unknown>, refinedRaw) as unknown as SchoolData
-    const aiCitations: string[] = aiData.citations || []
-    const citations = [...new Set([...aiCitations, ...searchCitations])]
+    const citations = [...new Set(responseCitations)]
     const data_quality = calcDataQuality(schoolName, mergedData, citations)
 
     return NextResponse.json({
@@ -138,9 +173,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/**
- * 构造兜底补查的 System Prompt（PRD §4.4 定向补查 Prompt）
- */
 function buildRefinePrompt(
   schoolName: string,
   confirmedData: Partial<SchoolData>,
@@ -172,9 +204,7 @@ ${queriesHint}
 
 降级处理规则：
 - 若某字段确实无法找到，在该字段值后追加 "_fallback_note" 键，值为降级说明
-- 例如：若无法找到校歌，返回 { "culture": { "school_song_excerpt": "【暂无】", "school_song_excerpt_fallback_note": "官方网站未公开完整歌词" } }
 - 颜色 HEX 若无法从官方来源获取，必须在 standard_colors 中标注 source_level 为 L5
-- 所有补查结果必须附带来源 URL（字段名 + _source_url）
 
 输出仅包含需要补查的维度字段，格式与 collect 接口的 schema 保持一致。`
 }
@@ -226,9 +256,6 @@ function buildFieldStrategies(schoolName: string, missingFields: string[]): stri
   return strategies.length > 0 ? strategies.join('\n\n') : '请针对以下缺失字段进行精准搜索：\n' + missingFields.join('\n')
 }
 
-/**
- * 精准模式下执行 refine 搜索
- */
 async function executeRefineSearch(
   queries: ReturnType<typeof buildRefineSearchQueries>,
   apiKey: string,

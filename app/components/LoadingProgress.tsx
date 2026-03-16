@@ -19,13 +19,10 @@ export const COLLECT_STEPS: LoadingStep[] = [
 ]
 
 export const COLLECT_PRECISE_STEPS: LoadingStep[] = [
-  { label: '搜索学校官网与权威来源', duration: 3000 },
-  { label: '检索基本面与校史资料', duration: 4000 },
-  { label: '检索校训、校歌与文化信息', duration: 4000 },
-  { label: '检索校徽、校色与视觉标识', duration: 4000 },
-  { label: '提取基本面与学术信息', duration: 5000 },
-  { label: '提取文化灵魂与符号语义', duration: 5000 },
-  { label: '提取地标、生态与营销信息', duration: 5000 },
+  { label: '准备采集任务', duration: 2000 },
+  { label: '搜索并提取基本面与学术信息', duration: 15000 },
+  { label: '搜索并提取文化与符号信息', duration: 15000 },
+  { label: '搜索并提取地标与营销信息', duration: 15000 },
   { label: '检索图片素材', duration: 5000 },
   { label: '整合所有信息汇总呈现中', duration: 99999 },
 ]

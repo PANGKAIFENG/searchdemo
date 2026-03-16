@@ -1,7 +1,8 @@
 /**
- * GeeKAI Web Search API 封装
+ * GeeKAI Web Search + Web Fetch API 封装
  *
  * 通过 /web_search 接口主动搜索网页，获取结构化搜索结果，
+ * 通过 /web_fetch 接口抓取完整页面内容（当服务可用时），
  * 用于注入 LLM prompt 作为事实上下文，取代黑箱 enable_search。
  */
 
@@ -32,6 +33,25 @@ export interface DimensionSearchResult {
   dimension: string
   query: string
   results: WebSearchResultItem[]
+}
+
+export interface WebFetchResult {
+  url: string
+  title: string
+  content: string
+}
+
+export interface WebFetchResponse {
+  id: string
+  created: number
+  result: {
+    url: string
+    title: string
+    content: string
+    links?: Record<string, string>
+    images?: Record<string, string>
+    metadata?: Record<string, unknown>
+  }
 }
 
 // ─── 搜索策略定义 ─────────────────────────────────────────
@@ -300,6 +320,106 @@ export function extractCitations(results: DimensionSearchResult[]): string[] {
     }
   }
   return Array.from(urls)
+}
+
+// ─── Web Fetch API ──────────────────────────────────────────
+
+/**
+ * 调用 GeeKAI web_fetch API 获取完整页面内容
+ * 当服务不可用时返回 null（优雅降级）
+ */
+export async function callWebFetch(
+  url: string,
+  apiKey: string,
+  baseUrl: string,
+): Promise<WebFetchResult | null> {
+  try {
+    const response = await fetch(`${baseUrl}/web_fetch`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        url,
+        engine: 'browser',
+        response_format: 'text',
+        timeout: 20,
+        remove_images: true,
+      }),
+    })
+
+    if (!response.ok) return null
+
+    const data: WebFetchResponse = await response.json()
+    if (!data.result?.content) return null
+
+    return {
+      url: data.result.url,
+      title: data.result.title,
+      content: data.result.content,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 从搜索结果中挑选最佳 URL 并抓取完整内容
+ * 优先 edu.cn 域名，其次百科类站点
+ */
+export async function fetchTopResults(
+  searchResults: DimensionSearchResult[],
+  apiKey: string,
+  baseUrl: string,
+  maxFetches: number = 5,
+): Promise<WebFetchResult[]> {
+  const allItems = searchResults.flatMap((r) => r.results)
+  const seenUrls = new Set<string>()
+  const uniqueItems: WebSearchResultItem[] = []
+
+  for (const item of allItems) {
+    if (seenUrls.has(item.link)) continue
+    seenUrls.add(item.link)
+    uniqueItems.push(item)
+  }
+
+  // 按优先级排序：edu.cn > baike > wikipedia > 其他
+  const scored = uniqueItems.map((item) => {
+    const url = item.link.toLowerCase()
+    const score = url.includes('.edu.cn') ? 100
+      : url.includes('baike.baidu.com') ? 80
+      : url.includes('wikipedia.org') ? 70
+      : 50
+    return { item, score }
+  })
+
+  const topUrls = scored
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxFetches)
+    .map((s) => s.item.link)
+
+  const results = await Promise.allSettled(
+    topUrls.map((url) => callWebFetch(url, apiKey, baseUrl)),
+  )
+
+  return results
+    .filter((r): r is PromiseFulfilledResult<WebFetchResult | null> => r.status === 'fulfilled')
+    .map((r) => r.value)
+    .filter((v): v is WebFetchResult => v !== null)
+}
+
+/**
+ * 将 web_fetch 抓取到的完整页面内容格式化为 LLM 上下文
+ */
+export function formatFetchResultsAsContext(fetched: WebFetchResult[]): string {
+  if (fetched.length === 0) return ''
+
+  return fetched
+    .map((f, i) =>
+      `=== 完整页面 ${i + 1}: ${f.title} (${f.url}) ===\n${f.content.slice(0, 8000)}`,
+    )
+    .join('\n\n')
 }
 
 /**
