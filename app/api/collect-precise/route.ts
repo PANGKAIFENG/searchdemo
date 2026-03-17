@@ -2,6 +2,13 @@ import { NextRequest } from 'next/server'
 import { SchoolData, ImageSearchHints } from '@/app/types'
 import { extractJSON } from '@/app/lib/utils'
 import { calcDataQuality } from '@/app/lib/quality-check'
+import {
+  searchByDimensions,
+  fetchTopResults,
+  formatSearchResultsAsContext,
+  formatFetchResultsAsContext,
+  extractCitations as extractSearchCitations,
+} from '@/app/lib/web-search'
 
 export const maxDuration = 300
 
@@ -22,7 +29,7 @@ interface ResponsesOutput {
   id: string
   type: string
   status?: string
-  content?: Array<{ type: string; text: string; annotations?: Array<{ url?: string }> }>
+  content?: Array<{ type: string; text: string }>
 }
 
 interface ResponsesResult {
@@ -32,13 +39,31 @@ interface ResponsesResult {
   usage?: { input_tokens: number; output_tokens: number }
 }
 
+function getPreciseModel(): string {
+  return process.env.GEEKAI_PRECISE_MODEL || process.env.GEEKAI_MODEL || 'gpt-4o'
+}
+
+function getReasoningConfig(model: string): { effort: 'minimal' | 'low' | 'medium' | 'high' } | undefined {
+  const effort = process.env.GEEKAI_PRECISE_REASONING_EFFORT as 'minimal' | 'low' | 'medium' | 'high' | undefined
+  const normalizedModel = model.toLowerCase()
+  const supportsReasoning =
+    normalizedModel.startsWith('gpt-5') ||
+    normalizedModel.startsWith('o1') ||
+    normalizedModel.startsWith('o3') ||
+    normalizedModel.startsWith('o4')
+
+  if (!supportsReasoning) return undefined
+
+  return { effort: effort || 'minimal' }
+}
+
 async function callResponsesAPI(
   instructions: string,
   input: string,
   apiKey: string,
   baseUrl: string,
   model: string,
-): Promise<{ text: string; citations: string[] }> {
+): Promise<string> {
   const response = await fetch(`${baseUrl}/responses`, {
     method: 'POST',
     headers: {
@@ -49,9 +74,9 @@ async function callResponsesAPI(
       model,
       instructions,
       input,
-      tools: [{ type: 'web_search_preview' }],
-      temperature: 0.2,
-      max_output_tokens: 16000,
+      temperature: 0.1,
+      max_output_tokens: 12000,
+      ...(getReasoningConfig(model) ? { reasoning: getReasoningConfig(model) } : {}),
     }),
   })
 
@@ -64,31 +89,18 @@ async function callResponsesAPI(
 
   // 提取文本内容
   let text = ''
-  const citations: string[] = []
 
   for (const item of data.output) {
     if (item.type === 'message' && item.content) {
       for (const c of item.content) {
         if (c.type === 'output_text') {
           text += c.text
-          // 提取 annotations 中的 URL 作为 citations
-          if (c.annotations) {
-            for (const ann of c.annotations) {
-              if (ann.url) citations.push(ann.url)
-            }
-          }
         }
       }
     }
   }
 
-  // 也从 markdown 链接中提取 URL
-  const urlMatches = text.matchAll(/\[.*?\]\((https?:\/\/[^\s)]+)\)/g)
-  for (const match of urlMatches) {
-    if (!citations.includes(match[1])) citations.push(match[1])
-  }
-
-  return { text, citations }
+  return text
 }
 
 // ─── 分批 Prompt 构建 ─────────────────────────────────────
@@ -96,6 +108,7 @@ async function callResponsesAPI(
 interface BatchConfig {
   name: string
   label: string
+  dimensions: string[]
   instructions: string
   input: (schoolName: string) => string
 }
@@ -106,12 +119,15 @@ function buildBatches(schoolName: string): BatchConfig[] {
 - 禁止任何 markdown、代码块标记、说明文字
 - JSON 字符串值内禁止用英文双引号 " 引用词语，改用【】或「」
 - 所有信息必须有搜索来源依据，找不到的填【暂无】，禁止编造
-- 每条重要信息后标注来源 URL`
+- 不要把来源 URL 直接拼接到自然语言字段正文中
+- 仅在 schema 已提供 source_url 的字段中填写来源链接
+- 全局来源链接会由系统从搜索 annotations 自动汇总，无需额外输出说明`
 
   return [
     {
       name: 'A',
       label: '搜索并提取基本面、校史与学术信息…',
+      dimensions: ['basic', 'history', 'academics'],
       instructions: `你是院校文化资料采集专家。${commonRules}`,
       input: () => `请搜索【${schoolName}】的官方网站和权威来源（优先 edu.cn），提取以下信息，输出 JSON：
 {
@@ -139,12 +155,13 @@ function buildBatches(schoolName: string): BatchConfig[] {
     {
       name: 'B',
       label: '搜索并提取文化灵魂与符号语义…',
+      dimensions: ['culture', 'symbols'],
       instructions: `你是院校文化资料采集专家。${commonRules}`,
       input: () => `请搜索【${schoolName}】的官方网站和权威来源，提取以下信息，输出 JSON：
 {
   "culture": {
     "motto": "校训原文（逐字提取，不可意译）",
-    "school_song_excerpt": "校歌歌名+完整歌词（若歌词过长，保留全部，不截断；找不到完整歌词则填【暂无完整歌词】）",
+    "school_song_excerpt": "校歌歌名+歌词节选（优先完整歌词；若找不到官方完整歌词，则返回可核实节选并注明【暂无完整歌词】）",
     "vision": "办学愿景（官方表述）",
     "core_spirit": "核心精神关键词（3-5个，如：爱国、进步、民主、科学）"
   },
@@ -178,6 +195,7 @@ function buildBatches(schoolName: string): BatchConfig[] {
     {
       name: 'C',
       label: '搜索并提取地标、生态与营销信息…',
+      dimensions: ['landmarks', 'ecology', 'marketing'],
       instructions: `你是院校文化资料采集专家。${commonRules}`,
       input: () => `请搜索【${schoolName}】的官方网站和权威来源，提取以下信息，输出 JSON：
 {
@@ -212,6 +230,30 @@ function buildBatches(schoolName: string): BatchConfig[] {
   ]
 }
 
+function buildStructuredInput(
+  schoolName: string,
+  schemaPrompt: string,
+  searchContext: string,
+  fetchContext: string,
+): string {
+  const evidenceSections = [
+    `目标院校：${schoolName}`,
+    '请只依据下面给出的搜索证据进行结构化提取；若证据不足，请按 schema 规则填【暂无】，禁止补充证据外事实。',
+    '【输出 Schema】',
+    schemaPrompt,
+    '【搜索摘要证据】',
+    searchContext || '（无）',
+  ]
+
+  if (fetchContext) {
+    evidenceSections.push('【网页正文证据】', fetchContext)
+  }
+
+  evidenceSections.push('再次强调：只输出 JSON，不要解释，不要重复来源列表。')
+
+  return evidenceSections.join('\n\n')
+}
+
 // ─── 核心采集逻辑 ─────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
@@ -226,7 +268,7 @@ export async function POST(request: NextRequest) {
 
   const apiKey = process.env.GEEKAI_API_KEY
   const baseUrl = process.env.GEEKAI_BASE_URL || 'https://geekai.co/api/v1'
-  const model = process.env.GEEKAI_MODEL || 'gpt-5.4-pro'
+  const model = getPreciseModel()
 
   if (!apiKey) {
     return new Response(
@@ -261,9 +303,41 @@ export async function POST(request: NextRequest) {
           batches.map(async (batch) => {
             push('progress', { step: batch.label })
 
-            const { text, citations } = await callResponsesAPI(
+            const searchResults = await searchByDimensions(
+              schoolName,
+              batch.dimensions,
+              apiKey,
+              baseUrl,
+            )
+
+            if (searchResults.length === 0) {
+              throw new Error(`No search results for batch ${batch.name}`)
+            }
+
+            push('progress', { step: `抓取 ${batch.name} 批次权威页面…` })
+
+            const fetchedPages = await fetchTopResults(
+              searchResults,
+              apiKey,
+              baseUrl,
+              batch.name === 'A' ? 6 : 5,
+            )
+
+            const citations = [
+              ...new Set([
+                ...extractSearchCitations(searchResults),
+                ...fetchedPages.map((page) => page.url),
+              ]),
+            ]
+
+            const text = await callResponsesAPI(
               batch.instructions,
-              batch.input(schoolName),
+              buildStructuredInput(
+                schoolName,
+                batch.input(schoolName),
+                formatSearchResultsAsContext(searchResults),
+                formatFetchResultsAsContext(fetchedPages),
+              ),
               apiKey,
               baseUrl,
               model,

@@ -5,12 +5,32 @@ import { calcDataQuality } from '@/app/lib/quality-check'
 import {
   buildRefineSearchQueries,
   callWebSearch,
+  fetchTopResults,
   formatSearchResultsAsContext,
+  formatFetchResultsAsContext,
   extractCitations as extractSearchCitations,
   type DimensionSearchResult,
 } from '@/app/lib/web-search'
 
 export const maxDuration = 120
+
+function getPreciseModel(): string {
+  return process.env.GEEKAI_PRECISE_MODEL || process.env.GEEKAI_MODEL || 'gpt-4o'
+}
+
+function getReasoningConfig(model: string): { effort: 'minimal' | 'low' | 'medium' | 'high' } | undefined {
+  const effort = process.env.GEEKAI_PRECISE_REASONING_EFFORT as 'minimal' | 'low' | 'medium' | 'high' | undefined
+  const normalizedModel = model.toLowerCase()
+  const supportsReasoning =
+    normalizedModel.startsWith('gpt-5') ||
+    normalizedModel.startsWith('o1') ||
+    normalizedModel.startsWith('o3') ||
+    normalizedModel.startsWith('o4')
+
+  if (!supportsReasoning) return undefined
+
+  return { effort: effort || 'minimal' }
+}
 
 /**
  * POST /api/collect/refine
@@ -47,7 +67,9 @@ export async function POST(request: NextRequest) {
 
     const apiKey = process.env.GEEKAI_API_KEY
     const baseUrl = process.env.GEEKAI_BASE_URL || 'https://geekai.co/api/v1'
-    const model = process.env.GEEKAI_MODEL || 'gpt-5.4-pro'
+    const model = mode === 'precise'
+      ? getPreciseModel()
+      : process.env.GEEKAI_MODEL || 'gpt-4o'
 
     if (!apiKey) {
       return NextResponse.json({ error: '服务未配置 API Key' }, { status: 500 })
@@ -61,17 +83,42 @@ export async function POST(request: NextRequest) {
     let responseCitations: string[] = []
 
     if (mode === 'precise') {
-      // 精准模式：使用 /responses 接口 + web_search_preview
+      let searchContext = ''
+      try {
+        const refineQueries = buildRefineSearchQueries(schoolName, missing_fields)
+        const searchResults = await executeRefineSearch(refineQueries, apiKey, baseUrl)
+        const fetchedPages = await fetchTopResults(searchResults, apiKey, baseUrl, 5)
+        searchContext = [
+          formatSearchResultsAsContext(searchResults),
+          formatFetchResultsAsContext(fetchedPages),
+        ]
+          .filter(Boolean)
+          .join('\n\n')
+        responseCitations = [
+          ...new Set([
+            ...extractSearchCitations(searchResults),
+            ...fetchedPages.map((page) => page.url),
+          ]),
+        ]
+      } catch {
+        // 搜索或抓取失败时静默降级
+      }
+
+      const finalUserInput = searchContext
+        ? `${userInput}\n\n以下是已检索到的事实证据，请严格以此为准输出 JSON：\n\n${searchContext}`
+        : userInput
+
+      // 精准模式：使用 /responses 接口做结构化，不再依赖黑箱搜索
       const aiResponse = await fetch(`${baseUrl}/responses`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
           model,
           instructions: systemPrompt,
-          input: userInput,
-          tools: [{ type: 'web_search_preview' }],
-          temperature: 0.2,
+          input: finalUserInput,
+          temperature: 0.1,
           max_output_tokens: 8000,
+          ...(getReasoningConfig(model) ? { reasoning: getReasoningConfig(model) } : {}),
         }),
       })
 
@@ -86,20 +133,9 @@ export async function POST(request: NextRequest) {
           for (const c of item.content) {
             if (c.type === 'output_text') {
               content += c.text
-              if (c.annotations) {
-                for (const ann of c.annotations) {
-                  if (ann.url) responseCitations.push(ann.url)
-                }
-              }
             }
           }
         }
-      }
-
-      // 提取 markdown 链接中的 URL
-      const urlMatches = content.matchAll(/\[.*?\]\((https?:\/\/[^\s)]+)\)/g)
-      for (const match of urlMatches) {
-        if (!responseCitations.includes(match[1])) responseCitations.push(match[1])
       }
     } else {
       // 快速模式：使用 /chat/completions + enable_search
