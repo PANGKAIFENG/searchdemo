@@ -1,10 +1,13 @@
 /**
- * GeeKAI Web Search + Web Fetch API 封装
+ * 多路 Web Search + Web Fetch 封装
  *
- * 通过 /web_search 接口主动搜索网页，获取结构化搜索结果，
- * 通过 /web_fetch 接口抓取完整页面内容（当服务可用时），
- * 用于注入 LLM prompt 作为事实上下文，取代黑箱 enable_search。
+ * 搜索层：GeeKAI web_search（并行）+ Serper.dev /search（并行）
+ * 抓取层：Jina Reader 直连（r.jina.ai/{url}）→ GeeKAI web_fetch 兜底
+ *
+ * Phase 1 升级：两路搜索结果合并去重，抓取优先 Jina 直连（无 500 问题）。
  */
+
+import { searchWithSerper, extractSiteFilter } from './serper-search'
 
 // ─── 类型定义 ───────────────────────────────────────────────
 
@@ -198,11 +201,13 @@ export const SEARCH_BATCHES: SearchBatch[] = [
 
 /**
  * 调用 GeeKAI web_search API 执行单次搜索
+ * @param model 搜索引擎模型，默认 glm-search-std
  */
 export async function callWebSearch(
   query: WebSearchQuery,
   apiKey: string,
   baseUrl: string,
+  model = 'glm-search-std',
 ): Promise<WebSearchResultItem[]> {
   const response = await fetch(`${baseUrl}/web_search`, {
     method: 'POST',
@@ -211,7 +216,7 @@ export async function callWebSearch(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: 'glm-search-std',
+      model,
       prompt: query.prompt,
       intent: true,
       count: query.count ?? 5,
@@ -228,6 +233,52 @@ export async function callWebSearch(
 
   const data: WebSearchResponse = await response.json()
   return data.results ?? []
+}
+
+/**
+ * 带兜底链的 web_search：
+ * 1. 并行调用 GeeKAI（模型链） + Serper.dev，取各自第一个非空结果
+ * 2. 合并去重后返回，条数一般比单一来源多 1.5~2×
+ */
+export async function callWebSearchWithFallback(
+  query: WebSearchQuery,
+  apiKey: string,
+  baseUrl: string,
+): Promise<WebSearchResultItem[]> {
+  // ── GeeKAI 模型兜底链 ──
+  const geekaiPromise = (async (): Promise<WebSearchResultItem[]> => {
+    const chain = (process.env.GEEKAI_SEARCH_MODEL_CHAIN || 'glm-search-std')
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean)
+
+    for (const model of chain) {
+      try {
+        const results = await callWebSearch(query, apiKey, baseUrl, model)
+        if (results.length > 0) return results
+      } catch {
+        // 降级到下一个模型
+      }
+    }
+    return []
+  })()
+
+  // ── Serper.dev 并行搜索 ──
+  const siteFilter = extractSiteFilter(query.domain_filter)
+  const serperPromise = searchWithSerper(query.prompt, siteFilter, query.count ?? 10)
+
+  const [geekaiResults, serperResults] = await Promise.all([geekaiPromise, serperPromise])
+
+  // 合并去重（以 URL 为 key）
+  const seen = new Set<string>()
+  const merged: WebSearchResultItem[] = []
+  for (const item of [...geekaiResults, ...serperResults]) {
+    if (seen.has(item.link)) continue
+    seen.add(item.link)
+    merged.push(item)
+  }
+
+  return merged
 }
 
 /**
@@ -253,7 +304,7 @@ export async function searchByDimensions(
   // 并行执行所有搜索（每个搜索独立，失败不影响其他）
   const settled = await Promise.allSettled(
     tasks.map(async (task) => {
-      const results = await callWebSearch(task.query, apiKey, baseUrl)
+      const results = await callWebSearchWithFallback(task.query, apiKey, baseUrl)
       return {
         dimension: task.dimension,
         query: task.query.prompt,
@@ -327,11 +378,13 @@ export function extractCitations(results: DimensionSearchResult[]): string[] {
 /**
  * 调用 GeeKAI web_fetch API 获取完整页面内容
  * 当服务不可用时返回 null（优雅降级）
+ * @param model 抓取引擎模型，默认 jina-reader-v1
  */
 export async function callWebFetch(
   url: string,
   apiKey: string,
   baseUrl: string,
+  model = 'jina-reader-v1',
 ): Promise<WebFetchResult | null> {
   try {
     const response = await fetch(`${baseUrl}/web_fetch`, {
@@ -341,6 +394,7 @@ export async function callWebFetch(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
+        model,
         url,
         engine: 'browser',
         response_format: 'text',
@@ -362,6 +416,89 @@ export async function callWebFetch(
   } catch {
     return null
   }
+}
+
+// ─── Jina Reader 直连抓取 ────────────────────────────────
+
+/**
+ * 通过 Jina Reader 直连抓取页面内容（GET r.jina.ai/{url}）
+ * - 无需配置即可使用（免费限速），有 JINA_API_KEY 时更稳定
+ * - 不依赖 GeeKAI 代理，解决 500 问题
+ */
+// 按 URL 域名判断是否需要 browser 渲染（JS 动态内容）
+const BROWSER_RENDER_DOMAINS = ['.edu.cn', 'baike.baidu.com', 'wenku.baidu.com']
+
+async function fetchWithJinaDirect(url: string): Promise<WebFetchResult | null> {
+  try {
+    const jinaUrl = `https://r.jina.ai/${url}`
+    const needsBrowser = BROWSER_RENDER_DOMAINS.some((d) => url.includes(d))
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'X-Return-Format': 'text',
+      'X-Remove-Selector': 'header, footer, nav, aside, script, style',
+      'X-Locale': 'zh-CN',
+    }
+    if (needsBrowser) {
+      headers['X-Engine'] = 'browser'
+      headers['X-Timeout'] = '15'
+    }
+    const jinaKey = process.env.JINA_API_KEY
+    if (jinaKey) {
+      headers['Authorization'] = `Bearer ${jinaKey}`
+    }
+
+    const resp = await fetch(jinaUrl, { headers })
+    if (!resp.ok) return null
+
+    const data = await resp.json().catch(() => null)
+    if (data?.data?.content) {
+      return {
+        url: data.data.url || url,
+        title: data.data.title || '',
+        content: data.data.content,
+      }
+    }
+
+    // 部分响应是纯文本
+    const text = await resp.text().catch(() => '')
+    if (text.length > 200) {
+      return { url, title: '', content: text }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 带兜底链的 web_fetch：
+ * 1. 优先使用 Jina Reader 直连（r.jina.ai/{url}），避免 GeeKAI 500 问题
+ * 2. Jina 失败时降级到 GeeKAI web_fetch 模型链
+ */
+export async function callWebFetchWithFallback(
+  url: string,
+  apiKey: string,
+  baseUrl: string,
+): Promise<WebFetchResult | null> {
+  // 优先 Jina 直连
+  const jinaResult = await fetchWithJinaDirect(url)
+  if (jinaResult) return jinaResult
+
+  // Jina 失败时降级到 GeeKAI 模型链
+  const chain = (process.env.GEEKAI_FETCH_MODEL_CHAIN || 'jina-reader-v1')
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean)
+
+  for (const model of chain) {
+    try {
+      const result = await callWebFetch(url, apiKey, baseUrl, model)
+      if (result) return result
+    } catch {
+      // 降级到下一个模型
+    }
+  }
+  return null
 }
 
 /**
@@ -400,7 +537,7 @@ export async function fetchTopResults(
     .map((s) => s.item.link)
 
   const results = await Promise.allSettled(
-    topUrls.map((url) => callWebFetch(url, apiKey, baseUrl)),
+    topUrls.map((url) => callWebFetchWithFallback(url, apiKey, baseUrl)),
   )
 
   return results

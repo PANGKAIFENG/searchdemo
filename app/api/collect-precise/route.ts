@@ -9,6 +9,19 @@ import {
   formatFetchResultsAsContext,
   extractCitations as extractSearchCitations,
 } from '@/app/lib/web-search'
+import {
+  discoverUrlsViaCitations,
+  extractViaUrlContext,
+  mergeAndRankUrls,
+} from '@/app/lib/citation-discovery'
+import { searchAndExtractWithPerplexity } from '@/app/lib/perplexity-search'
+import type { DimensionSearchResult } from '@/app/lib/web-search'
+
+// 从 batch.input() 完整 prompt 中截取纯 JSON schema 部分（去掉"请搜索..."前言）
+function extractSchemaFromBatchInput(batchInput: string): string {
+  const start = batchInput.indexOf('{')
+  return start >= 0 ? batchInput.slice(start) : batchInput
+}
 
 export const maxDuration = 300
 
@@ -43,18 +56,19 @@ function getPreciseModel(): string {
   return process.env.GEEKAI_PRECISE_MODEL || process.env.GEEKAI_MODEL || 'gpt-4o'
 }
 
-function getReasoningConfig(model: string): { effort: 'minimal' | 'low' | 'medium' | 'high' } | undefined {
+function getReasoningConfig(model: string): { effort: 'minimal' | 'low' | 'medium' | 'high'; summary: 'concise' | 'detailed' } | undefined {
   const effort = process.env.GEEKAI_PRECISE_REASONING_EFFORT as 'minimal' | 'low' | 'medium' | 'high' | undefined
   const normalizedModel = model.toLowerCase()
   const supportsReasoning =
     normalizedModel.startsWith('gpt-5') ||
     normalizedModel.startsWith('o1') ||
     normalizedModel.startsWith('o3') ||
-    normalizedModel.startsWith('o4')
+    normalizedModel.startsWith('o4') ||
+    normalizedModel.includes('thinking')
 
   if (!supportsReasoning) return undefined
 
-  return { effort: effort || 'minimal' }
+  return { effort: effort || 'minimal', summary: 'concise' }
 }
 
 async function callResponsesAPI(
@@ -75,7 +89,8 @@ async function callResponsesAPI(
       instructions,
       input,
       temperature: 0.1,
-      max_output_tokens: 12000,
+      max_output_tokens: 100000,
+      truncation: 'auto',
       ...(getReasoningConfig(model) ? { reasoning: getReasoningConfig(model) } : {}),
     }),
   })
@@ -136,16 +151,28 @@ function buildBatches(schoolName: string): BatchConfig[] {
     "short_name": "常用简称",
     "founded_year": "创办年份（如1898）",
     "location": "地理位置（如中国·北京）",
-    "introduction": "院校简介，约500字，涵盖历史沿革、办学定位、总体规模、核心优势"
+    "introduction": {
+      "value": "院校简介，约500字，涵盖历史沿革、办学定位、总体规模、核心优势",
+      "status": "confirmed|inferred|insufficient",
+      "confidence": 0.9,
+      "source_url": "来源 URL",
+      "source_level": "L1|L2|L3|L4|L5"
+    }
   },
   "history": {
     "timeline": [
-      { "year": "年份", "event": "该年发生的重要历史事件，20-40字" }
+      { "year": "年份", "event": "该年发生的重要历史事件，20-40字", "source_url": "事件来源 URL（找到则填）" }
     ],
     "notable_alumni": "代表性校友名单，3-8人，格式：姓名（身份）"
   },
   "academics": {
-    "strong_disciplines": "强势学科或优势专业（至少5个），逗号分隔",
+    "strong_disciplines": {
+      "value": "强势学科或优势专业（至少5个），逗号分隔",
+      "status": "confirmed|inferred|insufficient",
+      "confidence": 0.8,
+      "source_url": "来源 URL",
+      "source_level": "L1|L2|L3|L4|L5"
+    },
     "major_achievements": "重大科技成果或获奖（2-4条），逗号分隔"
   }
 }
@@ -160,13 +187,31 @@ function buildBatches(schoolName: string): BatchConfig[] {
       input: () => `请搜索【${schoolName}】的官方网站和权威来源，提取以下信息，输出 JSON：
 {
   "culture": {
-    "motto": "校训原文（逐字提取，不可意译）",
-    "school_song_excerpt": "校歌歌名+歌词节选（优先完整歌词；若找不到官方完整歌词，则返回可核实节选并注明【暂无完整歌词】）",
+    "motto": {
+      "value": "校训原文（逐字提取，不可意译）",
+      "status": "confirmed|inferred|insufficient",
+      "confidence": 0.95,
+      "source_url": "来源 URL",
+      "source_level": "L1|L2|L3|L4|L5"
+    },
+    "school_song_excerpt": {
+      "value": "校歌歌名+歌词节选（优先完整歌词；若找不到官方完整歌词，则返回可核实节选并注明【暂无完整歌词】）",
+      "status": "confirmed|inferred|insufficient",
+      "confidence": 0.8,
+      "source_url": "来源 URL",
+      "source_level": "L1|L2|L3|L4|L5"
+    },
     "vision": "办学愿景（官方表述）",
     "core_spirit": "核心精神关键词（3-5个，如：爱国、进步、民主、科学）"
   },
   "symbols": {
-    "emblem_description": "校徽官方释义，描述图形构成与寓意",
+    "emblem_description": {
+      "value": "校徽官方释义，描述图形构成与寓意",
+      "status": "confirmed|inferred|insufficient",
+      "confidence": 0.85,
+      "source_url": "来源 URL",
+      "source_level": "L1|L2|L3|L4|L5"
+    },
     "flag_description": "校旗说明，描述颜色、图案与象征（找不到则填【暂无】）",
     "standard_colors": [
       {
@@ -194,8 +239,8 @@ function buildBatches(schoolName: string): BatchConfig[] {
     },
     {
       name: 'C',
-      label: '搜索并提取地标、生态与营销信息…',
-      dimensions: ['landmarks', 'ecology', 'marketing'],
+      label: '搜索并提取地标与生态信息…',
+      dimensions: ['landmarks', 'ecology'],
       instructions: `你是院校文化资料采集专家。${commonRules}`,
       input: () => `请搜索【${schoolName}】的官方网站和权威来源，提取以下信息，输出 JSON：
 {
@@ -205,18 +250,14 @@ function buildBatches(schoolName: string): BatchConfig[] {
     "sculptures": "校园著名雕塑，无则填【暂无】"
   },
   "ecology": {
-    "plants": "校花/校树名称及象征（未找到则填【该校暂无官方认定校花校树】）",
+    "plants": {
+      "value": "校花/校树名称及象征（未找到则填【该校暂无官方认定校花校树】）",
+      "status": "confirmed|inferred|insufficient",
+      "confidence": 0.9,
+      "source_url": "来源 URL（找不到则留空字符串）",
+      "source_level": "L1|L2|L3|L4|L5"
+    },
     "geography": "校园湖泊、山丘、河流等自然地理要素"
-  },
-  "marketing": {
-    "president_message": "校长寄语核心句，50字以内",
-    "campus_slogan": "校园流行语或非官方口号",
-    "student_nickname": "学生对母校的昵称或情感称呼",
-    "b2b_highlights": [
-      "B端项目亮点1（面向企业采购，20-40字）",
-      "B端项目亮点2",
-      "B端项目亮点3"
-    ]
   },
   "image_search_hints": {
     "emblem": ["${schoolName} 校徽 官方 高清"],
@@ -226,6 +267,28 @@ function buildBatches(schoolName: string): BatchConfig[] {
 }
 
 注意：image_search_hints.landmark 的关键词必须来自 landmarks.buildings 中的真实地标名称。`,
+    },
+    {
+      name: 'D',
+      label: '归纳营销话术（基于已采集内容推断）…',
+      // Batch D 不搜索，依赖 A/B/C 结果在 prompt 中归纳
+      dimensions: [],
+      instructions: `你是院校品牌营销文案专家，擅长将院校文化特色转化为 B2B 提案语言。${commonRules}`,
+      input: () => `请基于已搜索到的【${schoolName}】院校信息，归纳以下营销话术字段，输出 JSON：
+{
+  "marketing": {
+    "president_message": "校长寄语核心句，50字以内（根据学校特色和愿景推断，注明「推断」）",
+    "campus_slogan": "校园流行语或非官方口号（可来自已知文化资料）",
+    "student_nickname": "学生对母校的昵称或情感称呼",
+    "b2b_highlights": [
+      "B端项目亮点1（面向企业采购，20-40字，突出历史、学科、文化特色）",
+      "B端项目亮点2（强调校园氛围、标志性元素）",
+      "B端项目亮点3（突出荣誉、影响力）"
+    ]
+  }
+}
+
+重要：b2b_highlights 必须基于该校的真实特色，不得泛泛而谈。`,
     },
   ]
 }
@@ -298,22 +361,122 @@ export async function POST(request: NextRequest) {
 
         const batches = buildBatches(schoolName)
 
-        // ── 并行调用 3 个批次（每个批次自带联网搜索） ──
-        const batchResults = await Promise.allSettled(
-          batches.map(async (batch) => {
+        // ── Batch A/B/C 并行执行（带搜索+抓取）；Batch D 暂跳过，等 A/B/C 完成后串行执行 ──
+        const searchBatches = batches.filter((b) => b.dimensions.length > 0)
+        const inferBatches = batches.filter((b) => b.dimensions.length === 0)
+
+        const phase3Enabled = process.env.PHASE3_CITATION_DISCOVERY_ENABLED === 'true'
+        const perplexityEnabled =
+          process.env.PERPLEXITY_ENABLED === 'true' &&
+          Boolean(process.env.PERPLEXITY_API_KEY)
+
+        const searchBatchResults = await Promise.allSettled(
+          searchBatches.map(async (batch) => {
             push('progress', { step: batch.label })
 
-            const searchResults = await searchByDimensions(
-              schoolName,
-              batch.dimensions,
-              apiKey,
-              baseUrl,
-            )
+            // ── Phase 3：Batch B 并行 citation discovery ──
+            const isBatchB = batch.name === 'B'
+            const perpApiKey = process.env.PERPLEXITY_API_KEY ?? ''
+
+            const citationDiscoveryPromise =
+              phase3Enabled && isBatchB
+                ? discoverUrlsViaCitations(schoolName, 'standard_colors', apiKey, baseUrl).catch(
+                    () => [] as string[],
+                  )
+                : Promise.resolve([] as string[])
+
+            // ── Perplexity 并行通道（仅 Batch B）──
+            const perplexityPromise =
+              perplexityEnabled && isBatchB
+                ? Promise.all([
+                    searchAndExtractWithPerplexity(schoolName, 'standard_colors', perpApiKey).catch(
+                      () => null,
+                    ),
+                    searchAndExtractWithPerplexity(schoolName, 'school_song', perpApiKey).catch(
+                      () => null,
+                    ),
+                  ])
+                : Promise.resolve([null, null] as [null, null])
+
+            const [searchResults, citationUrls, perplexityResults] = await Promise.all([
+              searchByDimensions(schoolName, batch.dimensions, apiKey, baseUrl),
+              citationDiscoveryPromise,
+              perplexityPromise,
+            ])
 
             if (searchResults.length === 0) {
               throw new Error(`No search results for batch ${batch.name}`)
             }
 
+            // ── Phase 3 Step 2：尝试 url_context 直接提取（仅 Batch B）──
+            if (phase3Enabled && isBatchB && citationUrls.length > 0) {
+              push('progress', { step: '尝试 url_context 直接提取符号语义…' })
+
+              const mergedUrls = mergeAndRankUrls(
+                extractSearchCitations(searchResults),
+                citationUrls,
+              )
+
+              const urlContextResult = await extractViaUrlContext(
+                schoolName,
+                mergedUrls,
+                extractSchemaFromBatchInput(batch.input(schoolName)),
+                apiKey,
+                baseUrl,
+              )
+
+              if (urlContextResult) {
+                push('progress', { step: 'url_context 提取成功，跳过 Jina 抓取…' })
+                const citations = [...new Set([...mergedUrls])]
+                return { data: urlContextResult, citations }
+              }
+
+              // url_context 不可用：将 citation URL 注入现有抓取路径
+              push('progress', { step: `抓取 ${batch.name} 批次权威页面（含 citation URL）…` })
+
+              const augmentedResults: DimensionSearchResult[] = [
+                ...searchResults,
+                {
+                  dimension: 'citation-discovery',
+                  query: '',
+                  results: citationUrls.map((link) => ({ link, title: '', content: '' })),
+                },
+              ]
+
+              const fetchedPages = await fetchTopResults(augmentedResults, apiKey, baseUrl, 5)
+
+              const citations = [
+                ...new Set([
+                  ...mergedUrls,
+                  ...fetchedPages.map((page) => page.url),
+                  ...(perplexityResults[0]?.citations ?? []),
+                  ...(perplexityResults[1]?.citations ?? []),
+                ]),
+              ]
+
+              const text = await callResponsesAPI(
+                batch.instructions,
+                buildStructuredInput(
+                  schoolName,
+                  batch.input(schoolName),
+                  formatSearchResultsAsContext(searchResults),
+                  formatFetchResultsAsContext(fetchedPages),
+                ),
+                apiKey,
+                baseUrl,
+                model,
+              )
+
+              try {
+                const parsed = extractJSON(text) as Record<string, unknown>
+                return { data: parsed, citations }
+              } catch {
+                push('progress', { step: `Batch ${batch.name} 输出解析失败，跳过…` })
+                throw new Error(`JSON parse failed for batch ${batch.name}: ${text.slice(0, 200)}`)
+              }
+            }
+
+            // ── 标准路径（Batch A/C，或 Phase 3 未启用）──
             push('progress', { step: `抓取 ${batch.name} 批次权威页面…` })
 
             const fetchedPages = await fetchTopResults(
@@ -323,10 +486,18 @@ export async function POST(request: NextRequest) {
               batch.name === 'A' ? 6 : 5,
             )
 
+            const perpCitations = isBatchB
+              ? [
+                  ...(perplexityResults[0]?.citations ?? []),
+                  ...(perplexityResults[1]?.citations ?? []),
+                ]
+              : []
+
             const citations = [
               ...new Set([
                 ...extractSearchCitations(searchResults),
                 ...fetchedPages.map((page) => page.url),
+                ...perpCitations,
               ]),
             ]
 
@@ -345,7 +516,40 @@ export async function POST(request: NextRequest) {
 
             try {
               const parsed = extractJSON(text) as Record<string, unknown>
-              return { data: parsed, citations }
+
+              // ── Perplexity 结果覆盖：优先覆盖 Batch B 低置信度字段 ──
+              let mergedData = parsed
+              if (isBatchB) {
+                const [colorResult, songResult] = perplexityResults
+                if (colorResult?.data) {
+                  const perpSymbols = colorResult.data.symbols as Record<string, unknown> | undefined
+                  const mainSymbols = mergedData.symbols as Record<string, unknown> | undefined
+                  if (perpSymbols?.standard_colors && Array.isArray(perpSymbols.standard_colors) && perpSymbols.standard_colors.length > 0) {
+                    mergedData = {
+                      ...mergedData,
+                      symbols: { ...(mainSymbols ?? {}), standard_colors: perpSymbols.standard_colors },
+                    }
+                  }
+                }
+                if (songResult?.data) {
+                  const perpCulture = songResult.data.culture as Record<string, unknown> | undefined
+                  const mainCulture = mergedData.culture as Record<string, unknown> | undefined
+                  const perpSongExcerpt = perpCulture?.school_song_excerpt as Record<string, unknown> | undefined
+                  const mainSongExcerpt = mainCulture?.school_song_excerpt as Record<string, unknown> | undefined
+                  const mainValue = mainSongExcerpt?.value as string | undefined
+                  if (perpSongExcerpt && (!mainValue || mainValue === '【暂无】')) {
+                    mergedData = {
+                      ...mergedData,
+                      culture: {
+                        ...(mainCulture ?? {}),
+                        school_song_excerpt: perpSongExcerpt,
+                      },
+                    }
+                  }
+                }
+              }
+
+              return { data: mergedData, citations }
             } catch {
               push('progress', { step: `Batch ${batch.name} 输出解析失败，跳过…` })
               throw new Error(`JSON parse failed for batch ${batch.name}: ${text.slice(0, 200)}`)
@@ -353,11 +557,11 @@ export async function POST(request: NextRequest) {
           }),
         )
 
-        // ── 合并结果 ──
-        push('progress', { step: '整合所有信息…' })
+        // ── 合并 A/B/C 结果 ──
+        push('progress', { step: '整合事实采集信息…' })
 
         const allCitations: string[] = []
-        const mergedResult = batchResults
+        const mergedABC = searchBatchResults
           .filter((r): r is PromiseFulfilledResult<{ data: Record<string, unknown>; citations: string[] }> =>
             r.status === 'fulfilled',
           )
@@ -375,15 +579,40 @@ export async function POST(request: NextRequest) {
             { data: {}, hints: null },
           )
 
-        const allFailed = batchResults.every((r) => r.status === 'rejected')
+        const allFailed = searchBatchResults.every((r) => r.status === 'rejected')
         if (allFailed) {
           push('error', { error: 'AI 提取全部失败，请重试或切换到快速模式' })
           closeStream()
           return
         }
 
-        const schoolData = mergedResult.data as unknown as SchoolData
-        const hints: ImageSearchHints = mergedResult.hints ?? {
+        // ── Batch D：推断批次（不搜索，基于 A/B/C 结果归纳营销话术）──
+        for (const batch of inferBatches) {
+          push('progress', { step: batch.label })
+          try {
+            // 将 A/B/C 结果注入为上下文供 Batch D 推断
+            const abcContext = JSON.stringify(mergedABC.data, null, 2).slice(0, 6000)
+            const inferInput = buildStructuredInput(
+              schoolName,
+              batch.input(schoolName),
+              `以下是已从权威来源采集到的${schoolName}院校信息（请基于此归纳，不要重新搜索）：\n\n${abcContext}`,
+              '',
+            )
+
+            const text = await callResponsesAPI(batch.instructions, inferInput, apiKey, baseUrl, model)
+            try {
+              const parsed = extractJSON(text) as Record<string, unknown>
+              mergedABC.data = { ...mergedABC.data, ...parsed }
+            } catch {
+              push('progress', { step: `Batch ${batch.name} 推断解析失败，跳过…` })
+            }
+          } catch {
+            // 推断批次失败不影响整体结果
+          }
+        }
+
+        const schoolData = mergedABC.data as unknown as SchoolData
+        const hints: ImageSearchHints = mergedABC.hints ?? {
           emblem: [`${schoolName} 校徽 官方 高清`],
           landmark: [`${schoolName} 标志性建筑`, `${schoolName} 图书馆`],
           scenery: [`${schoolName} 校园风景`, `${schoolName} 校园`],
@@ -392,6 +621,7 @@ export async function POST(request: NextRequest) {
         const citations = [...new Set(allCitations)]
         const data_quality = calcDataQuality(schoolName, schoolData, citations)
 
+        // ── Sufficiency gate：confidence < 0.5 的字段写入 insufficient_fields ──
         push('result', {
           school_name: schoolName,
           school_data: schoolData,
