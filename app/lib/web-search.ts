@@ -548,6 +548,7 @@ export async function fetchTopResults(
 
 /**
  * 将 web_fetch 抓取到的完整页面内容格式化为 LLM 上下文
+ * @deprecated 推荐使用 formatFetchResultsWithWindows 以减少 token 消耗
  */
 export function formatFetchResultsAsContext(fetched: WebFetchResult[]): string {
   if (fetched.length === 0) return ''
@@ -556,6 +557,73 @@ export function formatFetchResultsAsContext(fetched: WebFetchResult[]): string {
     .map((f, i) =>
       `=== 完整页面 ${i + 1}: ${f.title} (${f.url}) ===\n${f.content.slice(0, 8000)}`,
     )
+    .join('\n\n')
+}
+
+// ─── 关键词窗口截取 ─────────────────────────────────────
+
+const SECTION_KEYWORDS: Record<string, string[]> = {
+  basic:     ['简介', '概况', '地址', '校区', '创办', '建校'],
+  culture:   ['校训', '校歌', '精神', '愿景'],
+  symbols:   ['校徽', '校旗', '校色', 'VI', '视觉识别', '标准色'],
+  history:   ['历史沿革', '大事记', '更名', '升格', '合并'],
+  landmarks: ['地标', '校门', '图书馆', '礼堂', '建筑'],
+  ecology:   ['校花', '校树', '景观', '湖', '山'],
+  academics: ['学科', '科研', '成果'],
+  marketing: ['校长', '寄语', '昵称', '口号'],
+}
+
+/**
+ * 从页面内容中按 section 关键词截取证据窗口
+ * 每个命中关键词：前 320 字符 + 后 680 字符 = 最多 1000 字符/窗口
+ * 最多 3 个窗口，总计最多 3000 字符
+ * 无关键词命中时兜底 slice(0, 2600)
+ */
+export function selectEvidenceWindows(content: string, section: string): string {
+  const keywords = SECTION_KEYWORDS[section] ?? []
+  if (keywords.length === 0) return content.slice(0, 2600)
+
+  const windows: string[] = []
+  const usedRanges: Array<[number, number]> = []
+
+  for (const kw of keywords) {
+    if (windows.length >= 3) break
+    const idx = content.indexOf(kw)
+    if (idx < 0) continue
+    const start = Math.max(0, idx - 320)
+    const end = Math.min(content.length, idx + 680)
+
+    // 跳过与已有窗口重叠的范围（避免重复内容）
+    const overlaps = usedRanges.some(([s, e]) => start < e && end > s)
+    if (overlaps) continue
+
+    usedRanges.push([start, end])
+    windows.push(content.slice(start, end))
+  }
+
+  if (windows.length === 0) return content.slice(0, 2600)
+  return windows.join('\n…\n').slice(0, 3000)
+}
+
+/**
+ * 将 web_fetch 抓取到的完整页面内容按 section 关键词窗口截取后格式化为 LLM 上下文
+ * 替代 formatFetchResultsAsContext，大幅减少 token 消耗（每页 ≤3000 字符 vs 原 8000）
+ */
+export function formatFetchResultsWithWindows(
+  fetched: WebFetchResult[],
+  sections: string[],
+): string {
+  if (fetched.length === 0) return ''
+
+  return fetched
+    .map((f, i) => {
+      // 对每个 section 截取窗口，合并去重后限制总长度
+      const windowParts = sections.flatMap((sec) =>
+        selectEvidenceWindows(f.content, sec).split('\n…\n'),
+      )
+      const dedupedContent = [...new Set(windowParts)].join('\n…\n').slice(0, 3000)
+      return `=== 完整页面 ${i + 1}: ${f.title} (${f.url}) ===\n${dedupedContent}`
+    })
     .join('\n\n')
 }
 

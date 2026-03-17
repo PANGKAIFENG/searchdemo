@@ -6,7 +6,7 @@ import {
   searchByDimensions,
   fetchTopResults,
   formatSearchResultsAsContext,
-  formatFetchResultsAsContext,
+  formatFetchResultsWithWindows,
   extractCitations as extractSearchCitations,
 } from '@/app/lib/web-search'
 import {
@@ -36,49 +36,20 @@ function sseEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
-// ─── Responses API 调用 ───────────────────────────────────
-
-interface ResponsesOutput {
-  id: string
-  type: string
-  status?: string
-  content?: Array<{ type: string; text: string }>
-}
-
-interface ResponsesResult {
-  id: string
-  status: string
-  output: ResponsesOutput[]
-  usage?: { input_tokens: number; output_tokens: number }
-}
+// ─── Chat Completions API 调用 ────────────────────────────
 
 function getPreciseModel(): string {
   return process.env.GEEKAI_PRECISE_MODEL || process.env.GEEKAI_MODEL || 'gpt-4o'
 }
 
-function getReasoningConfig(model: string): { effort: 'minimal' | 'low' | 'medium' | 'high'; summary: 'concise' | 'detailed' } | undefined {
-  const effort = process.env.GEEKAI_PRECISE_REASONING_EFFORT as 'minimal' | 'low' | 'medium' | 'high' | undefined
-  const normalizedModel = model.toLowerCase()
-  const supportsReasoning =
-    normalizedModel.startsWith('gpt-5') ||
-    normalizedModel.startsWith('o1') ||
-    normalizedModel.startsWith('o3') ||
-    normalizedModel.startsWith('o4') ||
-    normalizedModel.includes('thinking')
-
-  if (!supportsReasoning) return undefined
-
-  return { effort: effort || 'minimal', summary: 'concise' }
-}
-
-async function callResponsesAPI(
+async function callChatCompletions(
   instructions: string,
   input: string,
   apiKey: string,
   baseUrl: string,
   model: string,
 ): Promise<string> {
-  const response = await fetch(`${baseUrl}/responses`, {
+  const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -86,36 +57,43 @@ async function callResponsesAPI(
     },
     body: JSON.stringify({
       model,
-      instructions,
-      input,
+      messages: [
+        { role: 'system', content: instructions },
+        { role: 'user', content: input },
+      ],
       temperature: 0.1,
-      max_output_tokens: 100000,
-      truncation: 'auto',
-      ...(getReasoningConfig(model) ? { reasoning: getReasoningConfig(model) } : {}),
+      max_tokens: 30000,
+      response_format: { type: 'json_object' },
+      enable_search: false,
     }),
   })
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '')
-    throw new Error(`Responses API failed (${response.status}): ${errText}`)
+    throw new Error(`Chat Completions API failed (${response.status}): ${errText}`)
   }
 
-  const data: ResponsesResult = await response.json()
+  const data = await response.json()
+  return data.choices?.[0]?.message?.content ?? ''
+}
 
-  // 提取文本内容
-  let text = ''
-
-  for (const item of data.output) {
-    if (item.type === 'message' && item.content) {
-      for (const c of item.content) {
-        if (c.type === 'output_text') {
-          text += c.text
-        }
-      }
-    }
+/**
+ * 当 extractJSON 失败时尝试修复损坏的 JSON 输出（最多调用 1 次）
+ */
+async function repairSectionOutput(
+  brokenText: string,
+  batchName: string,
+  instructions: string,
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+): Promise<string> {
+  const repairPrompt = `以下 JSON 格式有误，请修复并只输出合法 JSON：\n${brokenText.slice(0, 4000)}`
+  try {
+    return await callChatCompletions(instructions, repairPrompt, apiKey, baseUrl, model)
+  } catch (err) {
+    throw new Error(`Repair failed for batch ${batchName}: ${err}`)
   }
-
-  return text
 }
 
 // ─── 分批 Prompt 构建 ─────────────────────────────────────
@@ -194,8 +172,10 @@ function buildBatches(schoolName: string): BatchConfig[] {
       "source_url": "来源 URL",
       "source_level": "L1|L2|L3|L4|L5"
     },
-    "school_song_excerpt": {
-      "value": "校歌歌名+歌词节选（优先完整歌词；若找不到官方完整歌词，则返回可核实节选并注明【暂无完整歌词】）",
+    "school_song": {
+      "title": "校歌歌名（找不到则填【暂无】）",
+      "lyrics_excerpt": "歌词节选，优先完整歌词；若找不到官方完整歌词则填节选并注明【暂无完整歌词】；完全找不到则填【暂无】",
+      "completeness": "full|partial|not_found",
       "status": "confirmed|inferred|insufficient",
       "confidence": 0.8,
       "source_url": "来源 URL",
@@ -232,8 +212,9 @@ function buildBatches(schoolName: string): BatchConfig[] {
 }
 
 【标准校色专项规则】
-- 必须从搜索来源中找到明确的颜色信息才能填写 hex 值
-- 来源中提到颜色名称但无 HEX 值时，source_level 填 L3 或更低
+- 只有在搜索来源中找到官方 VI 手册、学校官网明确声明的颜色证据，status 才能填 confirmed
+- 来源中提到颜色名称但无 HEX 值时，status 填 inferred，source_level 填 L3 或更低
+- 官方已明确表示未公开标准色时，standard_colors 数组填单条 { "name": "官方未公开", "status": "officially_not_public" }
 - 完全找不到颜色信息时 standard_colors 返回空数组 []
 - 禁止凭空猜测 HEX 值`,
     },
@@ -454,13 +435,13 @@ export async function POST(request: NextRequest) {
                 ]),
               ]
 
-              const text = await callResponsesAPI(
+              const text = await callChatCompletions(
                 batch.instructions,
                 buildStructuredInput(
                   schoolName,
                   batch.input(schoolName),
                   formatSearchResultsAsContext(searchResults),
-                  formatFetchResultsAsContext(fetchedPages),
+                  formatFetchResultsWithWindows(fetchedPages, batch.dimensions),
                 ),
                 apiKey,
                 baseUrl,
@@ -471,8 +452,14 @@ export async function POST(request: NextRequest) {
                 const parsed = extractJSON(text) as Record<string, unknown>
                 return { data: parsed, citations }
               } catch {
-                push('progress', { step: `Batch ${batch.name} 输出解析失败，跳过…` })
-                throw new Error(`JSON parse failed for batch ${batch.name}: ${text.slice(0, 200)}`)
+                push('progress', { step: `Batch ${batch.name} 输出解析失败，尝试修复…` })
+                try {
+                  const repairedText = await repairSectionOutput(text, batch.name, batch.instructions, apiKey, baseUrl, model)
+                  const parsed = extractJSON(repairedText) as Record<string, unknown>
+                  return { data: parsed, citations }
+                } catch {
+                  throw new Error(`JSON parse failed for batch ${batch.name}: ${text.slice(0, 200)}`)
+                }
               }
             }
 
@@ -501,59 +488,79 @@ export async function POST(request: NextRequest) {
               ]),
             ]
 
-            const text = await callResponsesAPI(
+            const text = await callChatCompletions(
               batch.instructions,
               buildStructuredInput(
                 schoolName,
                 batch.input(schoolName),
                 formatSearchResultsAsContext(searchResults),
-                formatFetchResultsAsContext(fetchedPages),
+                formatFetchResultsWithWindows(fetchedPages, batch.dimensions),
               ),
               apiKey,
               baseUrl,
               model,
             )
 
+            let rawParsed: Record<string, unknown>
             try {
-              const parsed = extractJSON(text) as Record<string, unknown>
+              rawParsed = extractJSON(text) as Record<string, unknown>
+            } catch {
+              push('progress', { step: `Batch ${batch.name} 输出解析失败，尝试修复…` })
+              try {
+                const repairedText = await repairSectionOutput(text, batch.name, batch.instructions, apiKey, baseUrl, model)
+                rawParsed = extractJSON(repairedText) as Record<string, unknown>
+              } catch {
+                push('progress', { step: `Batch ${batch.name} 修复失败，跳过…` })
+                throw new Error(`JSON parse failed for batch ${batch.name}: ${text.slice(0, 200)}`)
+              }
+            }
 
-              // ── Perplexity 结果覆盖：优先覆盖 Batch B 低置信度字段 ──
-              let mergedData = parsed
-              if (isBatchB) {
-                const [colorResult, songResult] = perplexityResults
-                if (colorResult?.data) {
-                  const perpSymbols = colorResult.data.symbols as Record<string, unknown> | undefined
-                  const mainSymbols = mergedData.symbols as Record<string, unknown> | undefined
-                  if (perpSymbols?.standard_colors && Array.isArray(perpSymbols.standard_colors) && perpSymbols.standard_colors.length > 0) {
-                    mergedData = {
-                      ...mergedData,
-                      symbols: { ...(mainSymbols ?? {}), standard_colors: perpSymbols.standard_colors },
-                    }
-                  }
-                }
-                if (songResult?.data) {
-                  const perpCulture = songResult.data.culture as Record<string, unknown> | undefined
-                  const mainCulture = mergedData.culture as Record<string, unknown> | undefined
-                  const perpSongExcerpt = perpCulture?.school_song_excerpt as Record<string, unknown> | undefined
-                  const mainSongExcerpt = mainCulture?.school_song_excerpt as Record<string, unknown> | undefined
-                  const mainValue = mainSongExcerpt?.value as string | undefined
-                  if (perpSongExcerpt && (!mainValue || mainValue === '【暂无】')) {
-                    mergedData = {
-                      ...mergedData,
-                      culture: {
-                        ...(mainCulture ?? {}),
-                        school_song_excerpt: perpSongExcerpt,
-                      },
-                    }
+            // ── Perplexity 结果覆盖：优先覆盖 Batch B 低置信度字段 ──
+            let mergedData = rawParsed
+            if (isBatchB) {
+              const [colorResult, songResult] = perplexityResults
+              if (colorResult?.data) {
+                const perpSymbols = colorResult.data.symbols as Record<string, unknown> | undefined
+                const mainSymbols = mergedData.symbols as Record<string, unknown> | undefined
+                if (perpSymbols?.standard_colors && Array.isArray(perpSymbols.standard_colors) && perpSymbols.standard_colors.length > 0) {
+                  mergedData = {
+                    ...mergedData,
+                    symbols: { ...(mainSymbols ?? {}), standard_colors: perpSymbols.standard_colors },
                   }
                 }
               }
-
-              return { data: mergedData, citations }
-            } catch {
-              push('progress', { step: `Batch ${batch.name} 输出解析失败，跳过…` })
-              throw new Error(`JSON parse failed for batch ${batch.name}: ${text.slice(0, 200)}`)
+              if (songResult?.data) {
+                const perpCulture = songResult.data.culture as Record<string, unknown> | undefined
+                const mainCulture = mergedData.culture as Record<string, unknown> | undefined
+                // Perplexity 仍使用旧字段名 school_song_excerpt，映射到新字段 school_song
+                const perpSongData = (perpCulture?.school_song_excerpt ?? perpCulture?.school_song) as Record<string, unknown> | undefined
+                const mainSong = mainCulture?.school_song as Record<string, unknown> | undefined
+                const mainLyrics = mainSong?.lyrics_excerpt as string | undefined
+                if (perpSongData && (!mainLyrics || mainLyrics === '【暂无】')) {
+                  // 将 Perplexity 旧格式 {value} 适配为新格式 {title, lyrics_excerpt, completeness}
+                  const adaptedSong = perpSongData.lyrics_excerpt
+                    ? perpSongData
+                    : {
+                        title: perpSongData.title ?? '【暂无】',
+                        lyrics_excerpt: perpSongData.value ?? '【暂无】',
+                        completeness: perpSongData.value && perpSongData.value !== '【暂无】' ? 'partial' : 'not_found',
+                        status: perpSongData.status ?? 'inferred',
+                        confidence: perpSongData.confidence ?? 0.6,
+                        source_url: perpSongData.source_url ?? '',
+                        source_level: perpSongData.source_level ?? 'L3',
+                      }
+                  mergedData = {
+                    ...mergedData,
+                    culture: {
+                      ...(mainCulture ?? {}),
+                      school_song: adaptedSong,
+                    },
+                  }
+                }
+              }
             }
+
+            return { data: mergedData, citations }
           }),
         )
 
@@ -608,7 +615,7 @@ export async function POST(request: NextRequest) {
               '',
             )
 
-            const text = await callResponsesAPI(batch.instructions, inferInput, apiKey, baseUrl, model)
+            const text = await callChatCompletions(batch.instructions, inferInput, apiKey, baseUrl, model)
             try {
               const parsed = extractJSON(text) as Record<string, unknown>
               mergedABC.data = { ...mergedABC.data, ...parsed }
