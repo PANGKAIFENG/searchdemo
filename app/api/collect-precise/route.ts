@@ -560,6 +560,15 @@ export async function POST(request: NextRequest) {
         // ── 合并 A/B/C 结果 ──
         push('progress', { step: '整合事实采集信息…' })
 
+        // 把各 batch 失败原因推送到前端，方便调试
+        searchBatchResults.forEach((r, i) => {
+          if (r.status === 'rejected') {
+            const batchName = searchBatches[i]?.name ?? i
+            const reason = r.reason instanceof Error ? r.reason.message : String(r.reason)
+            push('progress', { step: `Batch ${batchName} 失败: ${reason.slice(0, 120)}` })
+          }
+        })
+
         const allCitations: string[] = []
         const mergedABC = searchBatchResults
           .filter((r): r is PromiseFulfilledResult<{ data: Record<string, unknown>; citations: string[] }> =>
