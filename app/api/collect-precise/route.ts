@@ -240,8 +240,16 @@ export async function POST(request: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       const enc = new TextEncoder()
-      const push = (event: string, data: unknown) =>
+      let streamClosed = false
+      const push = (event: string, data: unknown) => {
+        if (streamClosed) return
         controller.enqueue(enc.encode(sseEvent(event, data)))
+      }
+      const closeStream = () => {
+        if (streamClosed) return
+        streamClosed = true
+        controller.close()
+      }
 
       try {
         push('progress', { step: '准备采集任务…' })
@@ -296,7 +304,7 @@ export async function POST(request: NextRequest) {
         const allFailed = batchResults.every((r) => r.status === 'rejected')
         if (allFailed) {
           push('error', { error: 'AI 提取全部失败，请重试或切换到快速模式' })
-          controller.close()
+          closeStream()
           return
         }
 
@@ -321,7 +329,7 @@ export async function POST(request: NextRequest) {
         console.error('Collect-precise SSE error:', err)
         push('error', { error: '服务器内部错误，请稍后重试' })
       } finally {
-        controller.close()
+        closeStream()
       }
     },
   })

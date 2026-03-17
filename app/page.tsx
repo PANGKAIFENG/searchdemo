@@ -111,13 +111,13 @@ export default function HomePage() {
       const reader = collectRes.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let shouldStop = false
 
-      outer: while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
+      const consumeSseChunk = (chunkText: string) => {
+        buffer += chunkText
         const lines = buffer.split('\n')
         buffer = lines.pop() ?? ''
+
         for (const line of lines) {
           if (!line.startsWith('data:')) continue
           try {
@@ -126,10 +126,12 @@ export default function HomePage() {
               setCollectStep(payload.step)
             } else if (payload.school_data) {
               collectData = payload
-              break outer
+              shouldStop = true
+              return
             } else if (payload.error) {
               setError(payload.error)
               setPhase('idle')
+              shouldStop = true
               return
             }
           } catch {
@@ -138,15 +140,30 @@ export default function HomePage() {
         }
       }
 
+      outer: while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        consumeSseChunk(decoder.decode(value, { stream: true }))
+        if (shouldStop) {
+          break outer
+        }
+      }
+
+      consumeSseChunk(decoder.decode())
+      if (shouldStop && !collectData) {
+        return
+      }
+
       if (!collectData) {
         setError('采集失败，请重试')
         setPhase('idle')
         return
       }
 
-      const fetchedData: SchoolData = collectData.school_data
-      const hints: ImageSearchHints = collectData.image_search_hints
-      const fetchedQuality: DataQuality = collectData.data_quality
+      const resolvedCollectData = collectData as NonNullable<typeof collectData>
+      const fetchedData: SchoolData = resolvedCollectData.school_data
+      const hints: ImageSearchHints = resolvedCollectData.image_search_hints
+      const fetchedQuality: DataQuality = resolvedCollectData.data_quality
 
       // Step 3 → Step 4：verdict=需补查时自动调 refine
       let finalData = fetchedData

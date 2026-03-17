@@ -162,8 +162,17 @@ export async function POST(request: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       const enc = new TextEncoder()
-      const push = (event: string, data: unknown) =>
+      let streamClosed = false
+      const push = (event: string, data: unknown) => {
+        if (streamClosed) return
         controller.enqueue(enc.encode(sseEvent(event, data)))
+      }
+      const closeStream = () => {
+        if (streamClosed) return
+        streamClosed = true
+        clearInterval(progressTimer)
+        controller.close()
+      }
 
       // 推送进度步骤（每 5s 一条，与 AI 请求并行）
       let stepIdx = 0
@@ -199,7 +208,7 @@ export async function POST(request: NextRequest) {
         if (!aiResponse.ok || !aiResponse.body) {
           clearInterval(progressTimer)
           push('error', { error: `AI 服务请求失败 (${aiResponse.status})` })
-          controller.close()
+          closeStream()
           return
         }
 
@@ -236,7 +245,7 @@ export async function POST(request: NextRequest) {
 
         if (!fullContent) {
           push('error', { error: 'AI 未返回有效内容' })
-          controller.close()
+          closeStream()
           return
         }
 
@@ -247,7 +256,7 @@ export async function POST(request: NextRequest) {
           push('error', {
             error: '该学校的关联搜索触发了 AI 平台的安全策略，建议在学校名称后加上「大学官方」重新尝试。',
           })
-          controller.close()
+          closeStream()
           return
         }
 
@@ -256,7 +265,7 @@ export async function POST(request: NextRequest) {
           raw = extractJSON(fullContent) as Record<string, unknown>
         } catch {
           push('error', { error: 'AI 返回内容解析失败，请重试' })
-          controller.close()
+          closeStream()
           return
         }
 
@@ -282,7 +291,7 @@ export async function POST(request: NextRequest) {
         console.error('Collect SSE error:', err)
         push('error', { error: '服务器内部错误，请稍后重试' })
       } finally {
-        controller.close()
+        closeStream()
       }
     },
   })
