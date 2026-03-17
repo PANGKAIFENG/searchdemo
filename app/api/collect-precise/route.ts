@@ -622,8 +622,9 @@ export async function POST(request: NextRequest) {
             } catch {
               push('progress', { step: `Batch ${batch.name} 推断解析失败，跳过…` })
             }
-          } catch {
-            // 推断批次失败不影响整体结果
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err)
+            push('progress', { step: `Batch ${batch.name} 推断失败（跳过）: ${reason.slice(0, 120)}` })
           }
         }
 
@@ -646,8 +647,9 @@ export async function POST(request: NextRequest) {
           citations,
         })
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
         console.error('Collect-precise SSE error:', err)
-        push('error', { error: '服务器内部错误，请稍后重试' })
+        push('error', { error: `采集失败：${msg.slice(0, 300)}` })
       } finally {
         closeStream()
       }

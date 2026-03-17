@@ -1,4 +1,76 @@
-import { SchoolData, DataQuality, DimensionScore } from '@/app/types'
+import { SchoolData, DataQuality, DimensionScore, FieldWithEvidence } from '@/app/types'
+
+// ─── 字段级证据辅助（Phase 2）──────────────────────────────
+
+/**
+ * 从 FieldWithEvidence | string 中提取可读字符串值。
+ * 用于 quality-check 中统一处理新旧格式。
+ */
+export function resolveFieldValue(field: FieldWithEvidence | string | undefined): string {
+  if (!field) return ''
+  if (typeof field === 'string') return field
+  return field.value ?? ''
+}
+
+/**
+ * 提取字段的 confidence（若为裸 string 则按域名权重估算）。
+ * citations 用于裸 string 字段的权重回退计算。
+ */
+export function resolveFieldConfidence(
+  field: FieldWithEvidence | string | undefined,
+  fallbackCitations: string[],
+): number {
+  if (!field) return 0
+  if (typeof field !== 'string' && field.confidence !== undefined) {
+    return field.confidence
+  }
+  // 裸 string：按整体 citations 权重估算
+  return calcConfidenceScore(fallbackCitations)
+}
+
+/**
+ * 检查关键字段的 confidence 是否满足阈值（0.5），返回不足的字段路径列表。
+ * 用于 sufficiency gate。
+ */
+export function findInsufficientFields(
+  data: SchoolData,
+  citations: string[],
+): string[] {
+  const THRESHOLD = 0.5
+  const insufficient: string[] = []
+
+  const check = (path: string, field: FieldWithEvidence | string | undefined) => {
+    const conf = resolveFieldConfidence(field, citations)
+    const val = resolveFieldValue(field)
+    const isEmpty = !val || val.includes('暂无')
+    const status = typeof field !== 'string' ? field?.status : undefined
+    if (isEmpty || conf < THRESHOLD || status === 'insufficient') {
+      insufficient.push(path)
+    }
+  }
+
+  check('basic.introduction', data.basic?.introduction)
+  check('culture.motto', data.culture?.motto)
+  // 兼容新字段 school_song 和旧字段 school_song_excerpt
+  const rawSongFI = (data.culture as Record<string, unknown>)?.school_song
+  const songFIVal = rawSongFI && typeof rawSongFI === 'object'
+    ? ((rawSongFI as Record<string, unknown>).lyrics_excerpt as string ?? '')
+    : resolveFieldValue(data.culture?.school_song_excerpt)
+  const schoolSongField = songFIVal ? { value: songFIVal, status: 'confirmed' as const, confidence: 0.8 } : undefined
+  check('culture.school_song', schoolSongField)
+  check('symbols.emblem_description', data.symbols?.emblem_description)
+  check('ecology.plants', data.ecology?.plants)
+  check('academics.strong_disciplines', data.academics?.strong_disciplines)
+
+  // history.timeline 逐条检查 source_url（无则置信度降级）
+  const timeline = data.history?.timeline ?? []
+  const confirmedEvents = timeline.filter((t) => t.year && t.event && !t.event.includes('暂无'))
+  if (confirmedEvents.length < 5) {
+    insufficient.push(`history.timeline（当前 ${confirmedEvents.length} 条，需≥5条）`)
+  }
+
+  return insufficient
+}
 
 // ─── 可信度来源域名权重表（PRD §3.3）──────────────────────────
 
@@ -39,9 +111,10 @@ function scoreBasic(data: SchoolData): DimensionScore {
   if (!data.basic?.short_name?.trim() || data.basic.short_name.includes('暂无')) missing_fields.push('basic.short_name')
   if (!data.basic?.founded_year?.trim() || data.basic.founded_year.includes('暂无')) missing_fields.push('basic.founded_year')
   if (!data.basic?.location?.trim() || data.basic.location.includes('暂无')) missing_fields.push('basic.location')
-  if (!data.basic?.introduction?.trim() || data.basic.introduction.includes('暂无')) missing_fields.push('basic.introduction')
 
-  if (data.basic?.introduction && data.basic.introduction.length < 100) {
+  const introVal = resolveFieldValue(data.basic?.introduction)
+  if (!introVal || introVal.includes('暂无')) missing_fields.push('basic.introduction')
+  if (introVal && introVal.length < 100) {
     warnings.push('basic.introduction 内容过短（<100字），建议补充')
   }
 
@@ -53,22 +126,33 @@ function scoreCulture(data: SchoolData): DimensionScore {
   const missing_fields: string[] = []
   const warnings: string[] = []
 
-  const hasMotto = data.culture?.motto?.trim() && !data.culture.motto.includes('暂无')
+  const mottoVal = resolveFieldValue(data.culture?.motto)
+  const hasMotto = mottoVal && !mottoVal.includes('暂无')
   if (!hasMotto) missing_fields.push('culture.motto')
 
-  const hasSong = data.culture?.school_song_excerpt?.trim() && !data.culture.school_song_excerpt.includes('暂无')
-  const hasVision = data.culture?.vision?.trim() && !data.culture.vision.includes('暂无')
-  const hasSpirit = data.culture?.core_spirit?.trim() && !data.culture.core_spirit.includes('暂无')
+  // 兼容新字段 school_song（{title,lyrics_excerpt,completeness}）和旧字段 school_song_excerpt
+  const rawSong = (data.culture as Record<string, unknown>)?.school_song
+  const songNewVal = rawSong && typeof rawSong === 'object'
+    ? ((rawSong as Record<string, unknown>).lyrics_excerpt as string ?? (rawSong as Record<string, unknown>).title as string ?? '')
+    : ''
+  const songOldVal = resolveFieldValue(data.culture?.school_song_excerpt)
+  const songVal = songNewVal || songOldVal
+  const hasSong = songVal && !songVal.includes('暂无')
+
+  // vision / core_spirit 可能被 LLM 返回为 object，用 resolveFieldValue 防御
+  const visionVal = resolveFieldValue(data.culture?.vision as Parameters<typeof resolveFieldValue>[0])
+  const spiritVal = resolveFieldValue(data.culture?.core_spirit as Parameters<typeof resolveFieldValue>[0])
+  const hasVision = visionVal && !visionVal.includes('暂无')
+  const hasSpirit = spiritVal && !spiritVal.includes('暂无')
 
   if (!hasSong && !hasVision && !hasSpirit) {
-    missing_fields.push('culture.school_song_excerpt | culture.vision | culture.core_spirit（至少需要一项）')
+    missing_fields.push('culture.school_song | culture.vision | culture.core_spirit（至少需要一项）')
   }
 
   if (hasMotto && !hasSong) {
-    warnings.push('culture.school_song_excerpt 缺失，建议补充校歌信息')
+    warnings.push('culture.school_song 缺失，建议补充校歌信息')
   }
 
-  // 满分条件：校训 + 至少校歌/愿景/精神之一
   const score = !hasMotto ? 0 : (!hasSong && !hasVision && !hasSpirit) ? 50 : 100
   return { score, missing_fields, warnings }
 }
@@ -77,7 +161,8 @@ function scoreSymbols(data: SchoolData): DimensionScore {
   const missing_fields: string[] = []
   const warnings: string[] = []
 
-  const hasEmblem = data.symbols?.emblem_description?.trim() && !data.symbols.emblem_description.includes('暂无')
+  const emblemVal = resolveFieldValue(data.symbols?.emblem_description)
+  const hasEmblem = emblemVal && !emblemVal.includes('暂无')
   if (!hasEmblem) missing_fields.push('symbols.emblem_description')
 
   const colors = data.symbols?.standard_colors || []
@@ -105,7 +190,8 @@ function scoreHistory(data: SchoolData): DimensionScore {
     missing_fields.push(`history.timeline（当前 ${validEvents.length} 条，需≥5条）`)
   }
 
-  if (!data.history?.notable_alumni?.trim() || data.history.notable_alumni.includes('暂无')) {
+  const alumniVal = resolveFieldValue(data.history?.notable_alumni as Parameters<typeof resolveFieldValue>[0])
+  if (!alumniVal || alumniVal.includes('暂无')) {
     warnings.push('history.notable_alumni 缺失')
   }
 
@@ -137,7 +223,8 @@ function scoreEcology(data: SchoolData): DimensionScore {
   const missing_fields: string[] = []
   const warnings: string[] = []
 
-  const hasPlants = data.ecology?.plants?.trim() && !data.ecology.plants.includes('暂无')
+  const plantsVal = resolveFieldValue(data.ecology?.plants)
+  const hasPlants = plantsVal && !plantsVal.includes('暂无')
   if (!hasPlants) {
     missing_fields.push('ecology.plants（校花/校树）')
   }
@@ -149,14 +236,13 @@ function scoreAcademics(data: SchoolData): DimensionScore {
   const missing_fields: string[] = []
   const warnings: string[] = []
 
-  const disciplines = data.academics?.strong_disciplines?.trim()
+  const disciplinesVal = resolveFieldValue(data.academics?.strong_disciplines)
   const achievements = data.academics?.major_achievements?.trim()
 
-  if (!disciplines || disciplines.includes('暂无')) missing_fields.push('academics.strong_disciplines')
+  if (!disciplinesVal || disciplinesVal.includes('暂无')) missing_fields.push('academics.strong_disciplines')
   if (!achievements || achievements.includes('暂无')) missing_fields.push('academics.major_achievements')
 
-  // 以逗号分割判断数量（≥5个学科/成果得满分）
-  const count = disciplines ? disciplines.split(/[，,、]/).filter((s) => s.trim().length > 0).length : 0
+  const count = disciplinesVal ? disciplinesVal.split(/[，,、]/).filter((s) => s.trim().length > 0).length : 0
   const score = missing_fields.length === 2 ? 0 : count >= 5 ? 100 : Math.round((count / 5) * 80)
 
   if (count > 0 && count < 5) {
@@ -285,13 +371,16 @@ export function buildRecommendedQueries(schoolName: string, missingFields: strin
 }
 
 /**
- * 组合全部评分，生成标准 DataQuality 对象
+ * 组合全部评分，生成标准 DataQuality 对象。
+ * Phase 2：新增 insufficient_fields（字段级 confidence < 0.5 的路径列表），
+ * 供 sufficiency gate 判断是否触发 refine。
  */
-export function calcDataQuality(schoolName: string, data: SchoolData, citations: string[]): DataQuality {
+export function calcDataQuality(schoolName: string, data: SchoolData, citations: string[]): DataQuality & { insufficient_fields: string[] } {
   const completenessResult = calcCompletenessScore(data)
   const confidence_score = calcConfidenceScore(citations)
   const verdict = getVerdict(completenessResult.completeness_score, confidence_score)
   const recommended_queries = buildRecommendedQueries(schoolName, completenessResult.missing_fields)
+  const insufficient_fields = findInsufficientFields(data, citations)
 
   return {
     completeness_score: completenessResult.completeness_score,
@@ -301,5 +390,6 @@ export function calcDataQuality(schoolName: string, data: SchoolData, citations:
     low_confidence_warnings: completenessResult.low_confidence_warnings,
     missing_fields: completenessResult.missing_fields,
     recommended_queries,
+    insufficient_fields,
   }
 }
