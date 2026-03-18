@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server'
-import { SchoolData, ImageSearchHints } from '@/app/types'
+import { SchoolData, ImageSearchHints, StandardColor } from '@/app/types'
 import { extractJSON } from '@/app/lib/utils'
 import { calcDataQuality } from '@/app/lib/quality-check'
 import {
@@ -15,6 +15,7 @@ import {
   mergeAndRankUrls,
 } from '@/app/lib/citation-discovery'
 import { searchAndExtractWithPerplexity } from '@/app/lib/perplexity-search'
+import { extractEmblemColorsAsFallback } from '@/app/lib/emblem-color-extraction'
 import type { DimensionSearchResult } from '@/app/lib/web-search'
 
 // 从 batch.input() 完整 prompt 中截取纯 JSON schema 部分（去掉"请搜索..."前言）
@@ -600,6 +601,36 @@ export async function POST(request: NextRequest) {
           push('error', { error: 'AI 提取全部失败，请重试或切换到快速模式' })
           closeStream()
           return
+        }
+
+        // ── Vision 兜底：standard_colors 无有效 HEX 时从校徽图片提取主色 ──
+        const existingColors = (
+          (mergedABC.data.symbols as Record<string, unknown>)?.standard_colors ?? []
+        ) as StandardColor[]
+
+        const serperKey = process.env.SERPER_API_KEY
+        const visionEnabled = process.env.EMBLEM_VISION_FALLBACK_ENABLED !== 'false'
+
+        if (visionEnabled) {
+          push('progress', { step: '检查标准色完整性，尝试从校徽图像提取主色…' })
+          const extractedColors = await extractEmblemColorsAsFallback(
+            schoolName,
+            existingColors,
+            apiKey,
+            baseUrl,
+            model,
+            serperKey,
+          )
+          if (extractedColors && extractedColors.length > 0) {
+            push('progress', { step: `图像提取到 ${extractedColors.length} 个主色（L5 兜底）` })
+            mergedABC.data = {
+              ...mergedABC.data,
+              symbols: {
+                ...((mergedABC.data.symbols as Record<string, unknown>) ?? {}),
+                standard_colors: extractedColors,
+              },
+            }
+          }
         }
 
         // ── Batch D：推断批次（不搜索，基于 A/B/C 结果归纳营销话术）──
