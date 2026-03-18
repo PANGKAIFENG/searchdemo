@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { SchoolData, ImageResult, Step2Brief } from '@/app/types'
 import { extractJSON } from '@/app/lib/utils'
+import { resolveFieldValue } from '@/app/lib/quality-check'
 
 export const maxDuration = 60
 
@@ -162,6 +163,26 @@ function buildUserContent(data: SchoolData, images: ImageResult[]): string {
     ?.map((t) => `${t.year}：${t.event}`)
     .join('；') ?? ''
 
+  // 兼容 FieldWithEvidence | string 的字段
+  const introduction = resolveFieldValue(data.basic?.introduction)
+  const motto = resolveFieldValue(data.culture?.motto)
+  const coreSpirit = resolveFieldValue(data.culture?.core_spirit as Parameters<typeof resolveFieldValue>[0])
+  const emblemDesc = resolveFieldValue(data.symbols?.emblem_description)
+
+  // 兼容新字段 school_song（{title, lyrics_excerpt}）和旧字段 school_song_excerpt
+  const rawSong = (data.culture as Record<string, unknown>)?.school_song
+  let schoolSongText = '【暂无】'
+  if (rawSong && typeof rawSong === 'object') {
+    const song = rawSong as Record<string, unknown>
+    const title = song.title as string | undefined
+    const lyrics = song.lyrics_excerpt as string | undefined
+    if (title && title !== '【暂无】') {
+      schoolSongText = lyrics && lyrics !== '【暂无】' ? `《${title}》：${lyrics}` : `《${title}》（歌词暂无）`
+    }
+  } else {
+    schoolSongText = resolveFieldValue(data.culture?.school_song_excerpt) || '【暂无】'
+  }
+
   const academicsSection = buildAcademicsSection(data)
   const marketingSection = buildMarketingSection(data)
 
@@ -170,21 +191,21 @@ function buildUserContent(data: SchoolData, images: ImageResult[]): string {
 【基本信息】
 - 校名：${data.basic?.full_name}（${data.basic?.short_name}）
 - 创办：${data.basic?.founded_year} | 地点：${data.basic?.location}
-- 简介：${data.basic?.introduction}
+- 简介：${introduction}
 
 【文化灵魂】
-- 校训：${data.culture?.motto}
-- 核心精神：${data.culture?.core_spirit}
-- 校歌片段：${data.culture?.school_song_excerpt}
+- 校训：${motto}
+- 核心精神：${coreSpirit}
+- 校歌片段：${schoolSongText}
 
 【视觉符号】
-- 校徽：${data.symbols?.emblem_description}
+- 校徽：${emblemDesc}
 - 标准校色：${colors}
 
 【地标与生态】
 - 标志性建筑：${data.landmarks?.buildings}
 - 著名雕塑：${data.landmarks?.sculptures}
-- 校花/校树：${data.ecology?.plants}
+- 校花/校树：${resolveFieldValue(data.ecology?.plants)}
 - 地理环境：${data.ecology?.geography}
 ${academicsSection}
 ${marketingSection}
@@ -203,8 +224,9 @@ function buildAcademicsSection(data: SchoolData): string {
   const parts: string[] = ['\n【学术荣誉】']
   const academics = data.academics
 
-  if (academics?.strong_disciplines && !academics.strong_disciplines.includes('暂无')) {
-    parts.push(`- 强势学科：${academics.strong_disciplines}`)
+  const disciplinesVal = resolveFieldValue(academics?.strong_disciplines)
+  if (disciplinesVal && !disciplinesVal.includes('暂无')) {
+    parts.push(`- 强势学科：${disciplinesVal}`)
   }
   if (academics?.major_achievements && !academics.major_achievements.includes('暂无')) {
     parts.push(`- 重大成果：${academics.major_achievements}`)
@@ -253,13 +275,13 @@ function buildImageCoverageAnalysis(data: SchoolData, images: ImageResult[]): st
   // 检查校花/校树是否有图片覆盖
   const uncovered: string[] = []
   if (data.ecology?.plants) {
-    const plantNames = data.ecology.plants
+    const plantNames = resolveFieldValue(data.ecology.plants)
       .replace(/校花[：:]/g, '').replace(/校树[：:]/g, '')
       .split(/[；;，,、\s]+/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0 && s.length <= 8)
+      .map((s: string) => s.trim())
+      .filter((s: string) => s.length > 0 && s.length <= 8)
 
-    plantNames.forEach((name) => {
+    plantNames.forEach((name: string) => {
       const hasCoverage = Array.from(coveredKeywords).some((kw) => kw.includes(name) || name.includes(kw))
       if (!hasCoverage) uncovered.push(name)
     })
